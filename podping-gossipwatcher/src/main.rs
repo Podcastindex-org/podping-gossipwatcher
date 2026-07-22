@@ -678,7 +678,7 @@ async fn main() -> anyhow::Result<()> {
     }));
     // END WORKAROUND
 
-    println!("gossip-listener v{}\n", env!("CARGO_PKG_VERSION"));
+    println!("{} v{}\n", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     // Configure from the environment
     let bootstrap_peer_ids_str = env::var("BOOTSTRAP_PEER_IDS").unwrap_or_default();
