@@ -1233,31 +1233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gossip-listener"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "axum",
- "blake3",
- "bytes",
- "distributed-topic-tracker",
- "ed25519-dalek",
- "hex",
- "iroh",
- "iroh-gossip",
- "libc",
- "rand",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tokio-stream",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2696,6 +2671,31 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
+]
+
+[[package]]
+name = "podping-gossipwatcher"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "blake3",
+ "bytes",
+ "distributed-topic-tracker",
+ "ed25519-dalek",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "rand",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-stream",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]

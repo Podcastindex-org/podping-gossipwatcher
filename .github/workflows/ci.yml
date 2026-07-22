@@ -19,6 +19,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --locked
       - name: Build
-        run: cargo build -p gossip-listener --locked
+        run: cargo build -p podping-gossipwatcher --locked
       - name: Docker build
         run: docker build -t podping-gossipwatcher-ci .

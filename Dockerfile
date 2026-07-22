@@ -10,9 +10,9 @@ WORKDIR /src
 
 COPY Cargo.toml Cargo.lock /src/
 COPY dtt /src/dtt
-COPY gossip-listener /src/gossip-listener
+COPY podping-gossipwatcher /src/podping-gossipwatcher
 
-RUN cargo build --release --locked -p gossip-listener
+RUN cargo build --release --locked -p podping-gossipwatcher
 
 FROM debian:trixie-slim AS runner
 
@@ -22,14 +22,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /data/gossip /opt/gossip-listener \
-    && chown -R 1000:1000 /data /opt/gossip-listener
+RUN mkdir -p /data/gossip /opt/podping-gossipwatcher \
+    && chown -R 1000:1000 /data /opt/podping-gossipwatcher
 
-WORKDIR /opt/gossip-listener
-COPY --from=builder /src/target/release/gossip-listener /opt/gossip-listener/gossip-listener
+WORKDIR /opt/podping-gossipwatcher
+COPY --from=builder /src/target/release/podping-gossipwatcher /opt/podping-gossipwatcher/podping-gossipwatcher
 
 USER 1000
 
 EXPOSE 8089
 
-ENTRYPOINT ["/opt/gossip-listener/gossip-listener"]
+ENTRYPOINT ["/opt/podping-gossipwatcher/podping-gossipwatcher"]

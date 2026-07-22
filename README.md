@@ -4,15 +4,14 @@ Receives podcast feed update notifications ("podpings") over
 [Iroh](https://iroh.computer/) p2p gossip — no blockchain account or API key
 required.
 
-> **Naming:** the repo follows the Podcastindex-org watcher convention
-> (cf. [podping-hivewatcher](https://github.com/Podcastindex-org/podping-hivewatcher));
-> the crate and binary keep their original name **`gossip-listener`** from the
-> [podping.alpha](https://github.com/Podcastindex-org/podping.alpha) R&D repo,
-> where this code was developed.
+> Named to match the Podcastindex-org watcher convention
+> (cf. [podping-hivewatcher](https://github.com/Podcastindex-org/podping-hivewatcher)).
+> Developed as `gossip-listener` in the
+> [podping.alpha](https://github.com/Podcastindex-org/podping.alpha) R&D repo.
 
 ## What it does
 
-`gossip-listener` joins the `gossipping/v1/all` gossip topic, discovers peers
+`podping-gossipwatcher` joins the `gossipping/v1/all` gossip topic, discovers peers
 via DHT and a local bootstrap list, verifies each notification's ed25519
 signature against a trusted-publishers list, and prints valid notifications
 to stdout. Optionally it can:
@@ -45,8 +44,8 @@ docker run -d --name gossip-watcher \
 ## Building from source
 
 ```sh
-cargo build --release --locked -p gossip-listener
-./target/release/gossip-listener
+cargo build --release --locked -p podping-gossipwatcher
+./target/release/podping-gossipwatcher
 ```
 
 The workspace vendors `dtt/`, a fork of
