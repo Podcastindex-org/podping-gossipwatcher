@@ -1,0 +1,26 @@
+[package]
+name = "gossip-listener"
+version = "0.7.0"
+authors = ["Dave Jones"]
+edition = "2021"
+
+[dependencies]
+iroh = "0.97.0"
+iroh-gossip = { version = "0.97", features = ["net"] }
+distributed-topic-tracker = { path = "../dtt" }
+sha2 = "0.10"
+ed25519-dalek = { version = "3.0.0-pre.1", features = ["rand_core"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+hex = "0.4"
+bytes = "1"
+anyhow = "1"
+rand = "0.9"
+rusqlite = { version = "0.28", features = ["bundled"] }
+blake3 = "1"
+axum = "0.8"
+tokio-stream = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+libc = "0.2"
