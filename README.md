@@ -37,6 +37,7 @@ docker run -d --name gossip-watcher \
   -e KNOWN_PEERS_FILE=/data/gossip/known_peers.txt \
   -e TRUSTED_PUBLISHERS_FILE=/data/gossip/trusted_publishers.txt \
   -e TRUSTED_MONITORS_FILE=/data/gossip/trusted_monitors.txt \
+  -e ARCHIVE_PATH=/data/gossip/listener_archive.db \
   -e SSE_ENABLED=true -p 8089:8089 \
   podcastindexorg/podping-gossipwatcher:latest
 ```
@@ -50,7 +51,8 @@ cargo build --release --locked -p gossip-listener
 
 The workspace vendors `dtt/`, a fork of
 [distributed-topic-tracker](https://crates.io/crates/distributed-topic-tracker)
-0.2.8 (MIT, © Zacharias Boehler) — see `dtt/README.md` for the fork's changes.
+0.2.8 (MIT, © Zacharias Boehler) with local modifications to peer management
+and memory behavior.
 
 `Cargo.lock` pins pre-release transitive deps that ed25519-dalek 3.0.0-pre.1
 requires (`ed25519 3.0.0-rc.4`, `pkcs8 0.11.0-rc.11`, `spki 0.8.0-rc.4`).
