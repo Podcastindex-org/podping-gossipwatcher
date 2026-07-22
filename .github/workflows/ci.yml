@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --locked
+      - name: Build
+        run: cargo build -p gossip-listener --locked
+      - name: Docker build
+        run: docker build -t podping-gossipwatcher-ci .
