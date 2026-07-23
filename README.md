@@ -4,11 +4,6 @@ Receives podcast feed update notifications ("podpings") over
 [Iroh](https://iroh.computer/) p2p gossip — no blockchain account or API key
 required.
 
-> Named to match the Podcastindex-org watcher convention
-> (cf. [podping-hivewatcher](https://github.com/Podcastindex-org/podping-hivewatcher)).
-> Developed as `gossip-listener` in the
-> [podping.alpha](https://github.com/Podcastindex-org/podping.alpha) R&D repo.
-
 ## What it does
 
 `podping-gossipwatcher` joins the `gossipping/v1/all` gossip topic, discovers peers
@@ -32,6 +27,7 @@ known peers if no notification arrives within 180 seconds.
 ```sh
 docker run -d --name gossip-watcher \
   -v $(pwd)/data:/data/gossip \
+  -e NODE_FRIENDLY_NAME="MySpecialPodcastNode"
   -e IROH_NODE_KEY_FILE=/data/gossip/node.key \
   -e KNOWN_PEERS_FILE=/data/gossip/known_peers.txt \
   -e TRUSTED_PUBLISHERS_FILE=/data/gossip/trusted_publishers.txt \
@@ -100,24 +96,24 @@ Always build `--locked`; do not re-resolve these.
 
 All configuration is via environment variables:
 
-| Variable | Default | Purpose |
-|---|---|---|
+| Variable | Default | Purpose                                                      |
+|---|---|--------------------------------------------------------------|
 | `BOOTSTRAP_PEER_IDS` | (empty) | Comma-separated iroh node IDs to join directly, skipping DHT |
-| `IROH_NODE_KEY_FILE` | `gossip_listener_node.key` | Iroh transport key (created if missing) |
-| `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for DHT-less restarts (max 15) |
-| `DHT_INITIAL_SECRET` | `podping_gossip_default_secret` | Shared secret for DHT topic discovery |
-| `TRUSTED_PUBLISHERS_FILE` | `trusted_publishers.txt` | ed25519 pubkeys whose notifications are accepted |
-| `TRUSTED_MONITORS_FILE` | `trusted_monitors.txt` | Pubkeys allowed to send swarm-management messages |
-| `PEER_ANNOUNCE_INTERVAL` | `300` | Seconds between self-announcements (0 disables) |
-| `PEER_ENDORSE_INTERVAL` | `45` | Seconds between trust endorsements |
-| `ARCHIVE_ENABLED` | `false` | Archive notifications to SQLite |
-| `ARCHIVE_PATH` | `listener_archive.db` | SQLite archive location |
-| `CATCHUP_ENABLED` | `false` | Fetch missed notifications from peer archives on join |
-| `SSE_ENABLED` | `false` | Serve notifications as SSE |
-| `SSE_BIND_ADDR` | `0.0.0.0:8089` | SSE listen address |
-| `SSE_BUFFER_SIZE` | `1000` | SSE replay-buffer size |
-| `NODE_FRIENDLY_NAME` | (unset) | Human-readable name shown to monitors |
-| `TRACE_FD3` | (off) | Set to `1` to emit debug tracing on file descriptor 3 |
+| `IROH_NODE_KEY_FILE` | `gossip_listener_node.key` | Iroh transport key (created if missing)                      |
+| `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for DHT-less restarts (max 15)            |
+| `DHT_INITIAL_SECRET` | `podping_gossip_default_secret` | Shared secret for DHT topic discovery                        |
+| `TRUSTED_PUBLISHERS_FILE` | `trusted_publishers.txt` | ed25519 pubkeys whose notifications are accepted             |
+| `TRUSTED_MONITORS_FILE` | `trusted_monitors.txt` | Pubkeys allowed to send swarm-management messages            |
+| `PEER_ANNOUNCE_INTERVAL` | `300` | Seconds between self-announcements (0 disables)              |
+| `PEER_ENDORSE_INTERVAL` | `45` | Seconds between trust endorsements                           |
+| `ARCHIVE_ENABLED` | `false` | Archive notifications to SQLite                              |
+| `ARCHIVE_PATH` | `listener_archive.db` | SQLite archive location                                      |
+| `CATCHUP_ENABLED` | `false` | Fetch missed notifications from peer archives on join        |
+| `SSE_ENABLED` | `false` | Serve notifications as SSE                                   |
+| `SSE_BIND_ADDR` | `0.0.0.0:8089` | SSE listen address                                           |
+| `SSE_BUFFER_SIZE` | `1000` | SSE replay-buffer size                                       |
+| `NODE_FRIENDLY_NAME` | (unset) | Human-readable name shown to the rest of the swarm           |
+| `TRACE_FD3` | (off) | Set to `1` to emit debug tracing on file descriptor 3        |
 
 ## Releases
 
