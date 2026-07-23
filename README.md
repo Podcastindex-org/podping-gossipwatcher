@@ -41,6 +41,45 @@ docker run -d --name gossip-watcher \
   podcastindexorg/podping-gossipwatcher:latest
 ```
 
+## Consuming the output
+
+Three ways to feed notifications into another tool:
+
+**SSE endpoint (recommended).** With `SSE_ENABLED=true` and port 8089
+published (as in the example above), any process outside the container can
+consume a clean, machine-readable stream:
+
+```sh
+curl -N http://localhost:8089/events | your-tool
+```
+
+Each notification arrives as an `event: podping` carrying the full JSON
+payload (including `sig_status` and `sender_name`). The stream supports
+server-side filtering via query parameters (`?medium=`, `?reason=`,
+`?sender=`), keeps a replay buffer of the last `SSE_BUFFER_SIZE`
+notifications, and allows multiple simultaneous consumers — a consumer can
+disconnect and reconnect without affecting the watcher.
+
+**Piping stdout (foreground).** Without `-d`, the container's stdout is your
+stdout. Notifications print as `PODPING: [{json}]` lines, interleaved with
+status output, so filter on the prefix:
+
+```sh
+docker run ... podcastindexorg/podping-gossipwatcher:latest \
+  | grep --line-buffered '^PODPING:' | your-tool
+```
+
+Output is line-buffered, so lines arrive promptly through a pipe.
+
+**`docker logs` (detached).** With `-d`, pipe the log stream instead:
+
+```sh
+docker logs -f gossip-watcher | grep --line-buffered '^PODPING:' | your-tool
+```
+
+For programmatic use prefer the SSE endpoint — stdout is a human/debug
+surface and its non-`PODPING` lines may change between releases.
+
 ## Building from source
 
 ```sh
