@@ -98,7 +98,7 @@ All configuration is via environment variables:
 
 | Variable | Default | Purpose                                                      |
 |---|---|--------------------------------------------------------------|
-| `BOOTSTRAP_PEER_IDS` | (empty) | Comma-separated iroh node IDs to join directly, skipping DHT |
+| `BOOTSTRAP_PEER_IDS` | 5 podping.cloud writer nodes | Comma-separated iroh node IDs to join directly, alongside DHT discovery. Defaults to the stable podping.cloud writer nodes for fast joins; set your own list to override, or an empty string for DHT-only |
 | `IROH_NODE_KEY_FILE` | `gossip_listener_node.key` | Iroh transport key (created if missing)                      |
 | `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for DHT-less restarts (max 15)            |
 | `DHT_INITIAL_SECRET` | `podping_gossip_default_secret` | Shared secret for DHT topic discovery                        |
