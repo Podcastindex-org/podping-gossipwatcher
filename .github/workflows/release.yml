@@ -27,7 +27,7 @@ jobs:
       is_release: ${{ steps.get_version.outputs.IS_RELEASE }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Extract Version
         id: get_version
@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install system dependencies (Linux)
         if: contains(matrix.os, 'ubuntu')
@@ -102,7 +102,7 @@ jobs:
         run: cargo build --release --locked -p podping-gossipwatcher --target ${{ matrix.target }}
 
       - name: Upload Binary Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}-binary
           path: ${{ matrix.bin_path }}
@@ -118,10 +118,10 @@ jobs:
     if: needs.prepare.outputs.is_release == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -166,13 +166,12 @@ jobs:
     needs: [prepare, build-binaries]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download binary artifacts (Linux only)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: "*-linux-gnu*-binary"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -198,7 +197,7 @@ jobs:
             type=raw,value=${{ needs.prepare.outputs.app_version }},enable=${{ needs.prepare.outputs.is_release == 'true' }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
