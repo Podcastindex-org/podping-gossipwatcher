@@ -44,7 +44,7 @@
           src = workspaceSrc;
           strictDeps = true;
 
-          cargoToml = ./Cargo.toml;
+          cargoToml = ./podping-gossipwatcher/Cargo.toml;
           cargoLock = ./Cargo.lock;
 
           postUnpack = ''
@@ -60,7 +60,7 @@
           buildInputs = with pkgs; [
             openssl
           ];
-        };
+        } // craneLib.crateNameFromCargoToml { cargoToml = ./podping-gossipwatcher/Cargo.toml; };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
