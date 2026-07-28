@@ -1,35 +1,32 @@
-FROM rust:latest AS builder
+FROM debian:trixie-slim
 
-USER root
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-COPY Cargo.toml Cargo.lock /src/
-COPY dtt /src/dtt
-COPY podping-gossipwatcher /src/podping-gossipwatcher
-
-RUN cargo build --release --locked -p podping-gossipwatcher
-
-FROM debian:trixie-slim AS runner
-
-USER root
+ARG TARGETPLATFORM
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates openssl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /data/gossip /opt/podping-gossipwatcher \
-    && chown -R 1000:1000 /data /opt/podping-gossipwatcher
+RUN mkdir -p /data /opt/podping-gossipwatcher
 
 WORKDIR /opt/podping-gossipwatcher
-COPY --from=builder /src/target/release/podping-gossipwatcher /opt/podping-gossipwatcher/podping-gossipwatcher
 
-USER 1000
+COPY artifacts /tmp/artifacts
+
+RUN set -ex; \
+    case "$TARGETPLATFORM" in \
+        "linux/amd64") \
+            cp /tmp/artifacts/x86_64-unknown-linux-gnu-binary/podping-gossipwatcher /opt/podping-gossipwatcher/podping-gossipwatcher ;; \
+        "linux/arm64") \
+            cp /tmp/artifacts/aarch64-unknown-linux-gnu-binary/podping-gossipwatcher /opt/podping-gossipwatcher/podping-gossipwatcher ;; \
+        "linux/arm/v7") \
+            cp /tmp/artifacts/armv7-unknown-linux-gnueabihf-binary/podping-gossipwatcher /opt/podping-gossipwatcher/podping-gossipwatcher ;; \
+        *) \
+            echo "Unsupported platform: $TARGETPLATFORM"; exit 1 ;; \
+    esac; \
+    chmod +x /opt/podping-gossipwatcher/podping-gossipwatcher; \
+    rm -rf /tmp/artifacts
 
 EXPOSE 8089
 
 ENTRYPOINT ["/opt/podping-gossipwatcher/podping-gossipwatcher"]
+
