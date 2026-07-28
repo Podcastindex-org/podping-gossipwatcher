@@ -33,7 +33,7 @@ jobs:
         id: get_version
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            PARSED_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2)
+            PARSED_VERSION=$(grep '^version' podping-gossipwatcher/Cargo.toml | head -1 | cut -d '"' -f 2)
             echo "VERSION=v${PARSED_VERSION}" >> $GITHUB_OUTPUT
             echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
             echo "Building main. Extracted version: v${PARSED_VERSION}"
@@ -201,7 +201,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
