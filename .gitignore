@@ -2,3 +2,10 @@
 *.log
 .superpowers/
 .idea/
+.vscode
+result
+artifacts/
+
+**.DS_Store
+
+.direnv
