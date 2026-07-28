@@ -27,7 +27,7 @@ jobs:
       is_release: ${{ steps.get_version.outputs.IS_RELEASE }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Extract Version
         id: get_version
@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install system dependencies (Linux)
         if: contains(matrix.os, 'ubuntu')
@@ -118,7 +118,7 @@ jobs:
     if: needs.prepare.outputs.is_release == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
@@ -166,7 +166,7 @@ jobs:
     needs: [prepare, build-binaries]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download binary artifacts (Linux only)
         uses: actions/download-artifact@v4
