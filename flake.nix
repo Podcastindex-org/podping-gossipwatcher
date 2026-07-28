@@ -44,8 +44,8 @@
           src = workspaceSrc;
           strictDeps = true;
 
-          cargoToml = ./podping-gossipwatcher/Cargo.toml;
-          cargoLock = ./podping-gossipwatcher/Cargo.lock;
+          cargoToml = ./Cargo.toml;
+          cargoLock = ./Cargo.lock;
 
           postUnpack = ''
             export sourceRoot=$sourceRoot/podping-gossipwatcher
