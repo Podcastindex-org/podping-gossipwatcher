@@ -1887,7 +1887,7 @@ fn load_or_create_node_key(path: &str) -> anyhow::Result<SecretKey> {
         println!("  Loaded iroh node key from {}", path);
         Ok(SecretKey::from_bytes(&key_bytes))
     } else {
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;

@@ -8,7 +8,9 @@ use mainline::SigningKey;
 
 #[test]
 fn test_record_serialization_roundtrip() {
-    let signing_key = SigningKey::generate(&mut rand::rng());
+    let mut signing_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut signing_key_bytes);
+    let signing_key = SigningKey::from_bytes(&signing_key_bytes);
     let topic = [1u8; 32];
     let unix_minute = 12345u64;
     let node_id = [2u8; 32];
@@ -52,7 +54,9 @@ fn test_record_serialization_roundtrip() {
 
 #[test]
 fn test_record_verification() {
-    let signing_key = SigningKey::generate(&mut rand::rng());
+    let mut signing_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut signing_key_bytes);
+    let signing_key = SigningKey::from_bytes(&signing_key_bytes);
     let topic = [1u8; 32];
     let unix_minute = 12345u64;
     let node_id = signing_key.verifying_key().to_bytes();
@@ -79,8 +83,12 @@ fn test_record_verification() {
 
 #[test]
 fn test_encrypted_record_roundtrip() {
-    let signing_key = SigningKey::generate(&mut rand::rng());
-    let encryption_key = SigningKey::generate(&mut rand::rng());
+    let mut signing_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut signing_key_bytes);
+    let signing_key = SigningKey::from_bytes(&signing_key_bytes);
+    let mut encryption_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut encryption_key_bytes);
+    let encryption_key = SigningKey::from_bytes(&encryption_key_bytes);
     let topic = [1u8; 32];
     let unix_minute = 12345u64;
     let node_id = signing_key.verifying_key().to_bytes();
@@ -124,8 +132,12 @@ fn test_encrypted_record_roundtrip() {
 
 #[test]
 fn test_encrypted_record_serialization() {
-    let signing_key = SigningKey::generate(&mut rand::rng());
-    let encryption_key = SigningKey::generate(&mut rand::rng());
+    let mut signing_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut signing_key_bytes);
+    let signing_key = SigningKey::from_bytes(&signing_key_bytes);
+    let mut encryption_key_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut encryption_key_bytes);
+    let encryption_key = SigningKey::from_bytes(&encryption_key_bytes);
     let topic = [1u8; 32];
     let unix_minute = 12345u64;
     let node_id = signing_key.verifying_key().to_bytes();

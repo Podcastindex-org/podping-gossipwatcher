@@ -425,7 +425,9 @@ impl Record {
 
     /// Encrypt record with HPKE.
     pub fn encrypt(&self, encryption_key: &ed25519_dalek::SigningKey) -> EncryptedRecord {
-        let one_time_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
+        let mut one_time_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut one_time_bytes);
+        let one_time_key = ed25519_dalek::SigningKey::from_bytes(&one_time_bytes);
         let p_key = one_time_key.verifying_key();
         let data_enc = p_key.encrypt(&self.to_bytes()).expect("encryption failed");
         let key_enc = encryption_key

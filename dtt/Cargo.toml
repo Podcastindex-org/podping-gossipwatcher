@@ -25,8 +25,8 @@ ed25519-dalek-hpke = { version = "0.0.5" }
 
 tokio = { version = "1", default-features = false, features = ["macros", "time", "sync", "rt-multi-thread", "signal"] }
 
-iroh = { version = "0.97", optional = true, default-features = false }
-iroh-gossip = { version = "0.97", optional = true, default-features = false, features = ["net"]}
+iroh = { version = "1", optional = true, default-features = false }
+iroh-gossip = { version = "0.101", optional = true, default-features = false, features = ["net"]}
 
 futures-lite = "2"
 

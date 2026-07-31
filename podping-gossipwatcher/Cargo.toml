@@ -1,12 +1,12 @@
 [package]
 name = "podping-gossipwatcher"
-version = "0.9.0"
+version = "0.11.0"
 authors = ["Dave Jones"]
 edition = "2021"
 
 [dependencies]
-iroh = "0.97.0"
-iroh-gossip = { version = "0.97", features = ["net"] }
+iroh = "1"
+iroh-gossip = { version = "0.101", features = ["net"] }
 distributed-topic-tracker = { path = "../dtt" }
 sha2 = "0.10"
 ed25519-dalek = { version = "3.0.0-pre.1", features = ["rand_core"] }
