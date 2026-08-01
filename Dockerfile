@@ -3,7 +3,7 @@ FROM debian:trixie-slim
 ARG TARGETPLATFORM
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /data /opt/podping-gossipwatcher
@@ -29,4 +29,3 @@ RUN set -ex; \
 EXPOSE 8089
 
 ENTRYPOINT ["/opt/podping-gossipwatcher/podping-gossipwatcher"]
-
