@@ -55,4 +55,5 @@ RUST_LOG=debug TRACE_FD3=1 cargo run -p podping-gossipwatcher 3>trace.log
 
 ## Configuration
 
-All config via environment variables — see README table. No config file, no CLI flags.
+Config is available via environment variables or equivalent CLI flags — see README table.
+No config file.

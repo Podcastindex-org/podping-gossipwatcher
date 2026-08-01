@@ -15,6 +15,8 @@ tokio = { version = "1", features = ["full"] }
 hex = "0.4"
 bytes = "1"
 anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rand = "0.9"
 rusqlite = { version = "0.28", features = ["bundled"] }
 blake3 = "1"
 axum = "0.8"
@@ -22,4 +24,6 @@ tokio-stream = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 libc = "0.2"
+
+[dev-dependencies]
 sha2 = "0.10"

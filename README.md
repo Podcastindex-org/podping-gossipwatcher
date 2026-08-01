@@ -93,25 +93,28 @@ learn about each other.
 
 ## Configuration
 
-All configuration is via environment variables:
+Configuration is available via environment variables or equivalent CLI flags.
+CLI flags override environment variables.
 
-| Variable | Default | Purpose                                                      |
-|---|---|--------------------------------------------------------------|
-| `BOOTSTRAP_PEER_IDS` | 5 podping.cloud writer nodes | Comma-separated iroh node IDs to join directly. Defaults to the stable podping.cloud writer nodes for fast joins; set your own list to override, or an empty string to rely solely on `KNOWN_PEERS_FILE` and inbound connections |
-| `IROH_NODE_KEY_FILE` | `gossip_listener_node.key` | Iroh transport key (created if missing)                      |
-| `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for fast restarts (max 15)                |
-| `TRUSTED_PUBLISHERS_FILE` | `trusted_publishers.txt` | ed25519 pubkeys whose notifications are accepted             |
-| `TRUSTED_MONITORS_FILE` | `trusted_monitors.txt` | Pubkeys allowed to send swarm-management messages            |
-| `PEER_ANNOUNCE_INTERVAL` | `300` | Seconds between self-announcements (0 disables)              |
-| `PEER_ENDORSE_INTERVAL` | `45` | Seconds between trust endorsements                           |
-| `ARCHIVE_ENABLED` | `false` | Archive notifications to SQLite                              |
-| `ARCHIVE_PATH` | `listener_archive.db` | SQLite archive location                                      |
-| `CATCHUP_ENABLED` | `false` | Fetch missed notifications from peer archives on join        |
-| `SSE_ENABLED` | `false` | Serve notifications as SSE                                   |
-| `SSE_BIND_ADDR` | `0.0.0.0:8089` | SSE listen address                                           |
-| `SSE_BUFFER_SIZE` | `1000` | SSE replay-buffer size                                       |
-| `NODE_FRIENDLY_NAME` | (unset) | Human-readable name shown to the rest of the swarm           |
-| `TRACE_FD3` | (off) | Set to `1` to emit debug tracing on file descriptor 3        |
+Use `podping-gossipwatcher --help` for the full options list.
+
+| Variable | CLI flag | Default | Purpose |
+|---|---|---|---|
+| `BOOTSTRAP_PEER_IDS` | `--bootstrap-peer-ids` | 5 podping.cloud writer nodes | Comma-separated iroh node IDs to join directly. Defaults to the stable podping.cloud writer nodes for fast joins; set your own list to override, or an empty string to rely solely on `KNOWN_PEERS_FILE` and inbound connections |
+| `IROH_NODE_KEY_FILE` | `--iroh-node-key-file` | `gossip_listener_node.key` | Iroh transport key (created if missing) |
+| `KNOWN_PEERS_FILE` | `--known-peers-file` | `gossip_listener_known_peers.txt` | Learned-peer cache for fast restarts (max 15) |
+| `TRUSTED_PUBLISHERS_FILE` | `--trusted-publishers-file` | `trusted_publishers.txt` | ed25519 pubkeys whose notifications are accepted |
+| `TRUSTED_MONITORS_FILE` | `--trusted-monitors-file` | `trusted_monitors.txt` | Pubkeys allowed to send swarm-management messages |
+| `PEER_ANNOUNCE_INTERVAL` | `--peer-announce-interval` | `300` | Seconds between self-announcements (0 disables) |
+| `PEER_ENDORSE_INTERVAL` | `--peer-endorse-interval` | `45` | Seconds between trust endorsements |
+| `ARCHIVE_ENABLED` | `--archive-enabled` (alias: `--archive`) | `false` | Archive notifications to SQLite |
+| `ARCHIVE_PATH` | `--archive-path` | `listener_archive.db` | SQLite archive location |
+| `CATCHUP_ENABLED` | `--catchup-enabled` (alias: `--catchup`) | `false` | Fetch missed notifications from peer archives on join |
+| `SSE_ENABLED` | `--sse-enabled` (alias: `--sse`) | `false` | Serve notifications as SSE |
+| `SSE_BIND_ADDR` | `--sse-bind-addr` | `0.0.0.0:8089` | SSE listen address |
+| `SSE_BUFFER_SIZE` | `--sse-buffer-size` | `1000` | SSE replay-buffer size |
+| `NODE_FRIENDLY_NAME` | `--node-friendly-name` | (unset) | Human-readable name shown to the rest of the swarm |
+| `TRACE_FD3` | `--trace-fd3` | (off) | Enable debug tracing on file descriptor 3 |
 
 ## Releases
 

@@ -3,7 +3,6 @@ mod memwatch;
 mod sse;
 
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -11,6 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Write;
 use std::os::unix::io::FromRawFd;
+use clap::{CommandFactory, Parser};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
@@ -45,6 +45,7 @@ const DEFAULT_BOOTSTRAP_PEER_IDS: &str = concat!(
 const DEFAULT_TRUSTED_PUBLISHERS_FILE: &str = "trusted_publishers.txt";
 const DEFAULT_TRUSTED_MONITORS_FILE: &str = "trusted_monitors.txt";
 const DEFAULT_ARCHIVE_PATH: &str = "listener_archive.db";
+const DEFAULT_PEER_ANNOUNCE_INTERVAL: u64 = 300;
 const DEFAULT_PEER_ENDORSE_INTERVAL: u64 = 45;
 const REBOOTSTRAP_TIMEOUT: u64 = 180;
 const REJOIN_INTERVAL_SECS: u64 = 1800; // Re-join peers every 30 minutes to prevent topology drift
@@ -60,6 +61,70 @@ const JOIN_PEERS_TIMEOUT_SECS: u64 = 10;
 const ARCHIVE_SYNC_ALPN: &[u8] = b"/podping-archive-sync/1";
 const DEFAULT_SSE_BIND_ADDR: &str = "0.0.0.0:8089";
 const DEFAULT_SSE_BUFFER_SIZE: usize = 1000;
+
+#[derive(Parser, Debug, Clone)]
+#[command(
+    name = env!("CARGO_PKG_NAME"),
+    about = "iroh p2p gossip watcher for podping",
+    disable_version_flag = true
+)]
+struct CliArgs {
+    #[arg(short = 'v', short_alias = 'V', long = "version", action = clap::ArgAction::SetTrue, help = "Print version information and exit")]
+    version: bool,
+
+    #[arg(long, env = "BOOTSTRAP_PEER_IDS", default_value = DEFAULT_BOOTSTRAP_PEER_IDS)]
+    bootstrap_peer_ids: String,
+
+    #[arg(long, env = "IROH_NODE_KEY_FILE", default_value = DEFAULT_NODE_KEY_FILE)]
+    iroh_node_key_file: String,
+
+    #[arg(long, env = "KNOWN_PEERS_FILE", default_value = DEFAULT_KNOWN_PEERS_FILE)]
+    known_peers_file: String,
+
+    #[arg(long, env = "TRUSTED_PUBLISHERS_FILE", default_value = DEFAULT_TRUSTED_PUBLISHERS_FILE)]
+    trusted_publishers_file: String,
+
+    #[arg(long, env = "TRUSTED_MONITORS_FILE", default_value = DEFAULT_TRUSTED_MONITORS_FILE)]
+    trusted_monitors_file: String,
+
+    #[arg(long, env = "PEER_ANNOUNCE_INTERVAL", default_value_t = DEFAULT_PEER_ANNOUNCE_INTERVAL)]
+    peer_announce_interval: u64,
+
+    #[arg(long, env = "PEER_ENDORSE_INTERVAL", default_value_t = DEFAULT_PEER_ENDORSE_INTERVAL)]
+    peer_endorse_interval: u64,
+
+    #[arg(long = "archive-enabled", visible_alias = "archive", env = "ARCHIVE_ENABLED", value_parser = parse_boolish, num_args = 0..=1, default_missing_value = "true")]
+    archive_enabled: Option<bool>,
+
+    #[arg(long, env = "ARCHIVE_PATH", default_value = DEFAULT_ARCHIVE_PATH)]
+    archive_path: String,
+
+    #[arg(long = "catchup-enabled", visible_alias = "catchup", env = "CATCHUP_ENABLED", value_parser = parse_boolish, num_args = 0..=1, default_missing_value = "true")]
+    catchup_enabled: Option<bool>,
+
+    #[arg(long = "sse-enabled", visible_alias = "sse", env = "SSE_ENABLED", value_parser = parse_boolish, num_args = 0..=1, default_missing_value = "true")]
+    sse_enabled: Option<bool>,
+
+    #[arg(long, env = "SSE_BIND_ADDR", default_value = DEFAULT_SSE_BIND_ADDR)]
+    sse_bind_addr: String,
+
+    #[arg(long, env = "SSE_BUFFER_SIZE", default_value_t = DEFAULT_SSE_BUFFER_SIZE)]
+    sse_buffer_size: usize,
+
+    #[arg(long, env = "NODE_FRIENDLY_NAME")]
+    node_friendly_name: Option<String>,
+
+    #[arg(long, env = "TRACE_FD3", value_parser = parse_boolish, num_args = 0..=1, default_missing_value = "true")]
+    trace_fd3: Option<bool>,
+}
+
+fn parse_boolish(s: &str) -> Result<bool, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!("invalid boolean value '{s}' (expected: true/false/1/0/yes/no)")),
+    }
+}
 
 //Structs ------------------------------------------------------------------------------------------
 
@@ -650,15 +715,67 @@ async fn run_catchup(
 }
 
 //Main ---------------------------------------------------------------------------------------------
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    if let Some(early_exit) = detect_early_exit() {
+        match early_exit {
+            EarlyExit::Help => {
+                CliArgs::command().print_help()?;
+                println!();
+            }
+            EarlyExit::Version => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            }
+        }
+        return Ok(());
+    }
+
+    let args = CliArgs::parse();
+    if args.version {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main(args))
+}
+
+#[derive(Copy, Clone)]
+enum EarlyExit {
+    Help,
+    Version,
+}
+
+fn detect_early_exit() -> Option<EarlyExit> {
+    let mut wants_help = false;
+    let mut wants_version = false;
+    for arg in std::env::args_os().skip(1) {
+        if let Some(arg) = arg.to_str() {
+            match arg {
+                "--help" | "-h" => wants_help = true,
+                "--version" | "-v" | "-V" => wants_version = true,
+                _ => {}
+            }
+        }
+    }
+    if wants_help {
+        Some(EarlyExit::Help)
+    } else if wants_version {
+        Some(EarlyExit::Version)
+    } else {
+        None
+    }
+}
+
+async fn async_main(args: CliArgs) -> anyhow::Result<()> {
     // Write tracing output to fd 3 only if TRACE_FD3=1 and fd 3 is a pipe or
     // regular file, otherwise stderr. Uses a non-blocking writer so log spam
     // (e.g., iroh path exhaustion retries) can't starve the tokio runtime.
     // Usage: TRACE_FD3=1 RUST_LOG=debug ./gossip-listener 3>trace.log
     let trace_writer: Box<dyn std::io::Write + Send + Sync> = unsafe {
         let mut stat: libc::stat = std::mem::zeroed();
-        let fd3_ok = env::var("TRACE_FD3").as_deref() == Ok("1")
+        let fd3_ok = args.trace_fd3.unwrap_or(false)
             && libc::fstat(3, &mut stat) == 0
             && {
                 let ft = stat.st_mode & libc::S_IFMT;
@@ -711,29 +828,18 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{} v{}\n", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
-    // Configure from the environment
-    let bootstrap_peer_ids_str = env::var("BOOTSTRAP_PEER_IDS")
-        .unwrap_or_else(|_| DEFAULT_BOOTSTRAP_PEER_IDS.to_string());
-    let node_key_file =
-        env::var("IROH_NODE_KEY_FILE").unwrap_or_else(|_| DEFAULT_NODE_KEY_FILE.to_string());
-    let peers_file =
-        env::var("KNOWN_PEERS_FILE").unwrap_or_else(|_| DEFAULT_KNOWN_PEERS_FILE.to_string());
-    let trusted_publishers_file =
-        env::var("TRUSTED_PUBLISHERS_FILE").unwrap_or_else(|_| DEFAULT_TRUSTED_PUBLISHERS_FILE.to_string());
-    let peer_endorse_interval: u64 = env::var("PEER_ENDORSE_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PEER_ENDORSE_INTERVAL);
-    let archive_enabled = env::var("ARCHIVE_ENABLED")
-        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    let archive_path =
-        env::var("ARCHIVE_PATH").unwrap_or_else(|_| DEFAULT_ARCHIVE_PATH.to_string());
+    // Configure from CLI and environment (CLI overrides environment)
+    let bootstrap_peer_ids_str = args.bootstrap_peer_ids;
+    let node_key_file = args.iroh_node_key_file;
+    let peers_file = args.known_peers_file;
+    let trusted_publishers_file = args.trusted_publishers_file;
+    let peer_endorse_interval: u64 = args.peer_endorse_interval;
+    let archive_enabled = args.archive_enabled.unwrap_or(false);
+    let archive_path = args.archive_path;
 
     let trusted_publishers = Arc::new(RwLock::new(load_trusted_publishers(&trusted_publishers_file)));
 
-    let trusted_monitors_file = env::var("TRUSTED_MONITORS_FILE")
-        .unwrap_or_else(|_| DEFAULT_TRUSTED_MONITORS_FILE.to_string());
+    let trusted_monitors_file = args.trusted_monitors_file;
     let trusted_monitors: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(
         load_trusted_keys(&trusted_monitors_file)
     ));
@@ -754,27 +860,18 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let catchup_enabled = env::var("CATCHUP_ENABLED")
-        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
+    let catchup_enabled = args.catchup_enabled.unwrap_or(false);
 
-    let sse_enabled = env::var("SSE_ENABLED")
-        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    let sse_bind_addr: std::net::SocketAddr = env::var("SSE_BIND_ADDR")
-        .unwrap_or_else(|_| DEFAULT_SSE_BIND_ADDR.to_string())
+    let sse_enabled = args.sse_enabled.unwrap_or(false);
+    let sse_bind_addr: std::net::SocketAddr = args.sse_bind_addr
         .parse()
         .unwrap_or_else(|e| {
             eprintln!("\x1b[35m[WARN] Invalid SSE_BIND_ADDR, using default: {}\x1b[0m", e);
             DEFAULT_SSE_BIND_ADDR.parse().unwrap()
         });
-    let sse_buffer_size: usize = env::var("SSE_BUFFER_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_SSE_BUFFER_SIZE);
+    let sse_buffer_size: usize = args.sse_buffer_size;
 
-    let friendly_name: Option<String> = env::var("NODE_FRIENDLY_NAME")
-        .ok()
+    let friendly_name: Option<String> = args.node_friendly_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(|s| {
@@ -923,10 +1020,7 @@ async fn main() -> anyhow::Result<()> {
     let last_notification_time = Arc::new(AtomicU64::new(now_secs));
 
     //Periodically announce ourselves to the topic for the bootstrapping benefit of others
-    let peer_announce_interval: u64 = env::var("PEER_ANNOUNCE_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
+    let peer_announce_interval: u64 = args.peer_announce_interval;
     println!("  Announce interval: {}s", peer_announce_interval);
     println!("  Endorse interval: {}s", peer_endorse_interval);
 
