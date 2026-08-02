@@ -79,10 +79,18 @@
         };
 
         apps = {
-          default = flake-utils.lib.mkApp {
-            drv = podping-gossipwatcher;
-            name = "podping-gossipwatcher";
-          };
+          default =
+            (flake-utils.lib.mkApp {
+              drv = podping-gossipwatcher;
+              name = "podping-gossipwatcher";
+            })
+            // {
+              meta = {
+                description = "The iroh p2p gossip watching module for podping.";
+                homepage = "https://github.com/Podcastindex-org/podping-gossipwatcher";
+                license = pkgs.lib.licenses.mit;
+              };
+            };
         };
 
         devShells.default = craneLib.devShell {
