@@ -13,7 +13,7 @@ cargo build --release --locked -p podping-gossipwatcher
 
 ```
 Cargo.toml          # workspace: members = ["podping-gossipwatcher", "dtt"]
-podping-gossipwatcher/  # main binary (v0.9.0) — the app
+podping-gossipwatcher/  # main binary (v0.11.0-alpha.0) — the app
 dtt/                    # vendored fork of distributed-topic-tracker 0.2.8
 ```
 
