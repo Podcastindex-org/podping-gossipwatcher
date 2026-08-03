@@ -44,6 +44,8 @@ const ISOLATION_CHECK_INTERVAL_SECS: u64 = 300; // Check for topology isolation 
 const ISOLATION_MIN_UNIQUE_PEERS: usize = 3;    // Minimum unique source peers to consider healthy
 const ENDPOINT_RESET_AFTER_RECONNECTS: u32 = 3; // Create fresh endpoint after N consecutive reconnects
 const RECONNECT_AFTER_FAILURES: u64 = 5;
+const RECONNECT_SHUTDOWN_TIMEOUT_SECS: u64 = 10; // Cap on old gossip actor shutdown during reconnect
+const RECONNECT_JOIN_TIMEOUT_SECS: u64 = 60;     // Cap on DHT re-join during reconnect; a hung join must not wedge the reconnect task
 const PERIODIC_RESET_INTERVAL_SECS: u64 = 12 * 3600; // Recycle iroh endpoint every 12h to bound memory growth
 const RSS_CEILING_BYTES: u64 = 1024 * 1024 * 1024;   // 1 GB RSS ceiling — safety valve for endpoint recycle
 const BROADCAST_TIMEOUT_SECS: u64 = 10;
@@ -1201,10 +1203,16 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("\x1b[1;31m[RECONNECT] {} consecutive broadcast failures — reconnecting gossip topic (attempt {})...\x1b[0m", failures, consecutive_reconnects);
                     }
 
-                    // Shut down the old Gossip actor so all its internal dtt actors stop
+                    // Shut down the old Gossip actor so all its internal dtt actors stop.
+                    // Time-capped: a hung actor must not block the reconnect (the actor is
+                    // abandoned either way once the new Gossip replaces it).
                     {
                         let old_gossip = reconnect_gossip_handle.read().await;
-                        let _ = old_gossip.shutdown().await;
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(RECONNECT_SHUTDOWN_TIMEOUT_SECS),
+                            old_gossip.shutdown(),
+                        )
+                        .await;
                     }
 
                     // Spawn a fresh Gossip actor on the current endpoint
@@ -1231,9 +1239,20 @@ async fn main() -> anyhow::Result<()> {
                         None,
                         reconnect_dht_secret.clone().into_bytes(),
                     );
-                    match new_gossip.subscribe_and_join_bootstrap_only(publisher).await {
-                        Ok(new_topic) => match new_topic.split().await {
-                            Ok((new_sender, new_receiver)) => {
+                    // Time-capped: subscribe_and_join_bootstrap_only can hang indefinitely
+                    // on a sick gossip actor/endpoint; without this cap a wedged join
+                    // freezes this reconnect task forever (observed in the writer in
+                    // production: 90+ min stall). On timeout, log and retry later.
+                    let join_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(RECONNECT_JOIN_TIMEOUT_SECS),
+                        async {
+                            let new_topic = new_gossip.subscribe_and_join_bootstrap_only(publisher).await?;
+                            new_topic.split().await
+                        },
+                    )
+                    .await;
+                    match join_result {
+                        Ok(Ok((new_sender, new_receiver))) => {
                                 // Replace the shared sender and gossip handle
                                 {
                                     let mut sender_guard = reconnect_shared.write().await;
@@ -1283,13 +1302,12 @@ async fn main() -> anyhow::Result<()> {
                                 // It will be reset when unique_sources > threshold.
                                 println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully (bootstrap-only mode).\x1b[0m");
                             }
-                            Err(e) => {
-                                eprintln!("\x1b[1;31m[RECONNECT] Failed to split topic: {}. Will retry.\x1b[0m", e);
-                                reconnect_failures.store(0, Ordering::Relaxed);
-                            }
+                        Ok(Err(e)) => {
+                            eprintln!("\x1b[1;31m[RECONNECT] Failed to re-join gossip topic: {}. Will retry.\x1b[0m", e);
+                            reconnect_failures.store(0, Ordering::Relaxed);
                         }
-                        Err(e) => {
-                            eprintln!("\x1b[1;31m[RECONNECT] Failed to re-subscribe: {}. Will retry.\x1b[0m", e);
+                        Err(_) => {
+                            eprintln!("\x1b[1;31m[RECONNECT] Gossip re-join timed out after {}s. Will retry.\x1b[0m", RECONNECT_JOIN_TIMEOUT_SECS);
                             reconnect_failures.store(0, Ordering::Relaxed);
                         }
                     }
