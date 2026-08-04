@@ -7,9 +7,9 @@ required.
 ## What it does
 
 `podping-gossipwatcher` joins the `gossipping/v1/all` gossip topic, discovers peers
-via DHT and a local bootstrap list, verifies each notification's ed25519
-signature against a trusted-publishers list, and prints valid notifications
-to stdout. Optionally it can:
+via a compiled-in bootstrap list and a learned known-peers file, verifies each
+notification's ed25519 signature against a trusted-publishers list, and prints
+valid notifications to stdout. Optionally it can:
 
 - archive notifications to SQLite (`ARCHIVE_ENABLED`),
 - catch up on missed notifications from peer archives after downtime
@@ -83,14 +83,13 @@ cargo build --release --locked -p podping-gossipwatcher
 ./target/release/podping-gossipwatcher
 ```
 
-The workspace vendors `dtt/`, a fork of
-[distributed-topic-tracker](https://crates.io/crates/distributed-topic-tracker)
-0.2.8 (MIT, © Zacharias Boehler) with local modifications to peer management
-and memory behavior.
+## Peer discovery
 
-`Cargo.lock` pins pre-release transitive deps that ed25519-dalek 3.0.0-pre.1
-requires (`ed25519 3.0.0-rc.4`, `pkcs8 0.11.0-rc.11`, `spki 0.8.0-rc.4`).
-Always build `--locked`; do not re-resolve these.
+No DHT is used. Peer discovery is seed-based: 5 compiled-in podping.cloud
+writer node IDs (overridable via `BOOTSTRAP_PEER_IDS`), persisted to
+`KNOWN_PEERS_FILE` (capped at 15 entries) as new peers are seen, plus
+periodic `PeerAnnounce` gossip messages that let already-connected peers
+learn about each other.
 
 ## Configuration
 
@@ -98,10 +97,9 @@ All configuration is via environment variables:
 
 | Variable | Default | Purpose                                                      |
 |---|---|--------------------------------------------------------------|
-| `BOOTSTRAP_PEER_IDS` | 5 podping.cloud writer nodes | Comma-separated iroh node IDs to join directly, alongside DHT discovery. Defaults to the stable podping.cloud writer nodes for fast joins; set your own list to override, or an empty string for DHT-only |
+| `BOOTSTRAP_PEER_IDS` | 5 podping.cloud writer nodes | Comma-separated iroh node IDs to join directly. Defaults to the stable podping.cloud writer nodes for fast joins; set your own list to override, or an empty string to rely solely on `KNOWN_PEERS_FILE` and inbound connections |
 | `IROH_NODE_KEY_FILE` | `gossip_listener_node.key` | Iroh transport key (created if missing)                      |
-| `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for DHT-less restarts (max 15)            |
-| `DHT_INITIAL_SECRET` | `podping_gossip_default_secret` | Shared secret for DHT topic discovery                        |
+| `KNOWN_PEERS_FILE` | `gossip_listener_known_peers.txt` | Learned-peer cache for fast restarts (max 15)                |
 | `TRUSTED_PUBLISHERS_FILE` | `trusted_publishers.txt` | ed25519 pubkeys whose notifications are accepted             |
 | `TRUSTED_MONITORS_FILE` | `trusted_monitors.txt` | Pubkeys allowed to send swarm-management messages            |
 | `PEER_ANNOUNCE_INTERVAL` | `300` | Seconds between self-announcements (0 disables)              |

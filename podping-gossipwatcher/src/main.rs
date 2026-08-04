@@ -11,22 +11,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Write;
 use std::os::unix::io::FromRawFd;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use iroh_gossip::api::Event;
+use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::net::Gossip;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
-use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId as DttTopicId,
-    GossipSender as DttGossipSender, GossipReceiver as DttGossipReceiver};
 
 const TOPIC_STRING: &str = "gossipping/v1/all";
+// First 32 bytes of SHA-512(TOPIC_STRING) — the same derivation dtt's
+// RecordTopic used. Must never change: this is the wire-level gossip topic
+// the deployed fleet is subscribed to.
+const TOPIC_ID_BYTES: [u8; 32] = [
+    0xd2, 0x50, 0x50, 0x12, 0x44, 0x19, 0xf4, 0xc5, 0x71, 0x18, 0xc5, 0x99,
+    0xdc, 0xb8, 0x98, 0x53, 0x22, 0x42, 0xa2, 0x30, 0x62, 0xab, 0xc4, 0x24,
+    0x80, 0x17, 0x01, 0x37, 0x7f, 0x36, 0xc8, 0xb5,
+];
 const DEFAULT_NODE_KEY_FILE: &str = "gossip_listener_node.key";
 const DEFAULT_KNOWN_PEERS_FILE: &str = "gossip_listener_known_peers.txt";
 const MAX_KNOWN_PEERS: usize = 15;
-const DEFAULT_DHT_SECRET: &str = "podping_gossip_default_secret";
 // Stable podping.cloud writer nodes, used when BOOTSTRAP_PEER_IDS is unset.
-// Set BOOTSTRAP_PEER_IDS to override, or to an empty string for DHT-only join.
+// Set BOOTSTRAP_PEER_IDS to override, or to an empty string to rely on
+// inbound connections and the known-peers file only.
 const DEFAULT_BOOTSTRAP_PEER_IDS: &str = concat!(
     "85db0701f52fddbe251734cff653aeed22e1b7f2dce4a190981afcb74df84b0e,",
     "8fd0624d8373fa42bbebe9dca14dcb36c2973aa78bac542e595660d68a594c8b,",
@@ -45,10 +52,11 @@ const ISOLATION_MIN_UNIQUE_PEERS: usize = 3;    // Minimum unique source peers t
 const ENDPOINT_RESET_AFTER_RECONNECTS: u32 = 3; // Create fresh endpoint after N consecutive reconnects
 const RECONNECT_AFTER_FAILURES: u64 = 5;
 const RECONNECT_SHUTDOWN_TIMEOUT_SECS: u64 = 10; // Cap on old gossip actor shutdown during reconnect
-const RECONNECT_JOIN_TIMEOUT_SECS: u64 = 60;     // Cap on DHT re-join during reconnect; a hung join must not wedge the reconnect task
+const RECONNECT_JOIN_TIMEOUT_SECS: u64 = 60;     // Cap on gossip re-join during reconnect; a hung join must not wedge the reconnect task
 const PERIODIC_RESET_INTERVAL_SECS: u64 = 12 * 3600; // Recycle iroh endpoint every 12h to bound memory growth
 const RSS_CEILING_BYTES: u64 = 1024 * 1024 * 1024;   // 1 GB RSS ceiling — safety valve for endpoint recycle
 const BROADCAST_TIMEOUT_SECS: u64 = 10;
+const JOIN_PEERS_TIMEOUT_SECS: u64 = 10;
 
 /// Read process resident set size in bytes. Returns 0 on non-Linux or read failure.
 fn read_rss_bytes() -> u64 {
@@ -698,8 +706,6 @@ async fn main() -> anyhow::Result<()> {
         env::var("IROH_NODE_KEY_FILE").unwrap_or_else(|_| DEFAULT_NODE_KEY_FILE.to_string());
     let peers_file =
         env::var("KNOWN_PEERS_FILE").unwrap_or_else(|_| DEFAULT_KNOWN_PEERS_FILE.to_string());
-    let dht_initial_secret = env::var("DHT_INITIAL_SECRET")
-        .unwrap_or_else(|_| DEFAULT_DHT_SECRET.to_string());
     let trusted_publishers_file =
         env::var("TRUSTED_PUBLISHERS_FILE").unwrap_or_else(|_| DEFAULT_TRUSTED_PUBLISHERS_FILE.to_string());
     let peer_endorse_interval: u64 = env::var("PEER_ENDORSE_INTERVAL")
@@ -769,7 +775,6 @@ async fn main() -> anyhow::Result<()> {
         });
 
     println!("  Topic: \"{}\"", TOPIC_STRING);
-    println!("  DHT discovery: enabled");
     println!("  Archive:      {}", if archive_enabled { &archive_path } else { "disabled" });
     println!("  Catch-up:     {}", if catchup_enabled { "enabled" } else { "disabled" });
     println!("  SSE:          {}", if sse_enabled { format!("{}", sse_bind_addr) } else { "disabled".to_string() });
@@ -827,26 +832,21 @@ async fn main() -> anyhow::Result<()> {
 
     let router = router_builder.spawn();
 
-    // Bootstrap this node over DHT
-    let dht_signing_key = ed25519_dalek::SigningKey::from_bytes(&node_key_bytes);
-    let dtt_topic_id = DttTopicId::new(TOPIC_STRING.to_string());
-    println!("  Topic ID: {}", hex::encode(dtt_topic_id.hash()));
-    let record_publisher = RecordPublisher::new(
-        dtt_topic_id,
-        dht_signing_key.verifying_key(),
-        dht_signing_key,
-        None,
-        dht_initial_secret.clone().into_bytes(),
-    );
+    let topic_id = iroh_gossip::proto::TopicId::from(TOPIC_ID_BYTES);
+    println!("  Topic ID: {}", hex::encode(TOPIC_ID_BYTES));
 
-    let topic = gossip
-        .subscribe_and_join_bootstrap_only(record_publisher)
-        .await?;
-    let (gossip_sender, gossip_receiver) = topic.split().await?;
-    println!("  Joined gossip topic (bootstrap-only mode, no merge actors).");
+    let bootstrap_peers = gather_bootstrap_peers(&bootstrap_peer_ids_str, &peers_file, my_node_id);
+    if bootstrap_peers.is_empty() {
+        println!("  Warning: no bootstrap peers configured — waiting for inbound connections only.");
+    } else {
+        println!("  Subscribing with {} bootstrap peers...", bootstrap_peers.len());
+    }
+    let topic = gossip.subscribe(topic_id, bootstrap_peers).await?;
+    let (gossip_sender, gossip_receiver) = topic.split();
+    println!("  Subscribed to gossip topic.");
 
     // Shared sender so all tasks use the same sender (and reconnect can replace it)
-    let shared_sender: Arc<tokio::sync::RwLock<DttGossipSender>> =
+    let shared_sender: Arc<tokio::sync::RwLock<GossipSender>> =
         Arc::new(tokio::sync::RwLock::new(gossip_sender));
     // Track the current Gossip actor so reconnect can shut down the old one
     let shared_gossip: Arc<tokio::sync::RwLock<Gossip>> =
@@ -864,30 +864,6 @@ async fn main() -> anyhow::Result<()> {
     let reconnect_notify = Arc::new(Notify::new());
     let force_endpoint_reset = Arc::new(AtomicBool::new(false));
     let receive_generation = Arc::new(AtomicU64::new(0));
-
-    //Joining peers from the known peers file serves as fallback/insurance if DHT no work
-    let mut bootstrap_peers: Vec<iroh::EndpointId> = bootstrap_peer_ids_str
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-
-    let file_peers = load_known_peers(&peers_file);
-    for p in file_peers {
-        if !bootstrap_peers.contains(&p) {
-            bootstrap_peers.push(p);
-        }
-    }
-
-    if bootstrap_peers.is_empty() {
-        println!("  No additional bootstrap peers configured.");
-    } else {
-        println!("  Joining {} bootstrap peers...", bootstrap_peers.len());
-        let sender = shared_sender.read().await;
-        if let Err(e) = sender.join_peers_direct(bootstrap_peers, None).await {
-            eprintln!("  Warning: failed to join bootstrap peers: {}", e);
-        }
-    }
 
     // --- Re-bootstrap watchdog timer ---
     let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -931,7 +907,7 @@ async fn main() -> anyhow::Result<()> {
                         let sender = announce_shared.read().await;
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(BROADCAST_TIMEOUT_SECS),
-                            sender.broadcast(payload),
+                            sender.broadcast(payload.into()),
                         ).await {
                             Ok(Ok(_)) => {
                                 announce_failures.store(0, Ordering::Relaxed);
@@ -989,7 +965,7 @@ async fn main() -> anyhow::Result<()> {
                         let sender = endorse_shared.read().await;
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(BROADCAST_TIMEOUT_SECS),
-                            sender.broadcast(payload),
+                            sender.broadcast(payload.into()),
                         ).await {
                             Ok(Ok(_)) => {
                                 endorse_failures.store(0, Ordering::Relaxed);
@@ -1049,7 +1025,7 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         println!("\x1b[33m[WATCHDOG] Re-joining {} peers...\x1b[0m", peers.len());
                         let sender = watchdog_shared.read().await;
-                        if let Err(e) = sender.join_peers_direct(peers, None).await {
+                        if let Err(e) = join_peers_timeout(&sender, peers).await {
                             eprintln!("\x1b[35m[WARN] Re-bootstrap failed: {}\x1b[0m", e);
                         }
                     }
@@ -1092,7 +1068,7 @@ async fn main() -> anyhow::Result<()> {
                 if !peers.is_empty() {
                     println!("\x1b[33m[REJOIN] Proactive re-join with {} peers to refresh gossip topology\x1b[0m", peers.len());
                     let sender = rejoin_shared.read().await;
-                    if let Err(e) = sender.join_peers_direct(peers, None).await {
+                    if let Err(e) = join_peers_timeout(&sender, peers).await {
                         eprintln!("\x1b[35m[WARN] Periodic re-join failed: {}\x1b[0m", e);
                     }
                 }
@@ -1117,7 +1093,7 @@ async fn main() -> anyhow::Result<()> {
         let reconnect_gossip_handle = shared_gossip.clone();
         let reconnect_endpoint = endpoint.clone();
         let reconnect_node_key_bytes = node_key_bytes;
-        let reconnect_dht_secret = dht_initial_secret.clone();
+        let reconnect_bootstrap_ids = bootstrap_peer_ids_str.clone();
         let reconnect_peers_file = peers_file.clone();
         let reconnect_my_node_id = my_node_id;
         let reconnect_trusted = trusted_publishers.clone();
@@ -1229,30 +1205,24 @@ async fn main() -> anyhow::Result<()> {
                     // Replace the router: dropping the old one stops its accept loop,
                     // the new one routes incoming connections to the fresh actor
                     _current_router = new_router_builder.spawn();
-                    // Re-subscribe via bootstrap-only DTT (restarts Publisher for DHT visibility, no merge actors)
-                    let dht_key = ed25519_dalek::SigningKey::from_bytes(&reconnect_node_key_bytes);
-                    let dtt_topic = DttTopicId::new(TOPIC_STRING.to_string());
-                    let publisher = RecordPublisher::new(
-                        dtt_topic,
-                        dht_key.verifying_key(),
-                        dht_key,
-                        None,
-                        reconnect_dht_secret.clone().into_bytes(),
+                    // Time-capped (kept from v0.11.1): subscribe is near-instant, but the
+                    // cap guards a sick gossip actor/endpoint from wedging this task.
+                    let bootstrap_peers = gather_bootstrap_peers(
+                        &reconnect_bootstrap_ids,
+                        &reconnect_peers_file,
+                        reconnect_my_node_id,
                     );
-                    // Time-capped: subscribe_and_join_bootstrap_only can hang indefinitely
-                    // on a sick gossip actor/endpoint; without this cap a wedged join
-                    // freezes this reconnect task forever (observed in the writer in
-                    // production: 90+ min stall). On timeout, log and retry later.
                     let join_result = tokio::time::timeout(
                         std::time::Duration::from_secs(RECONNECT_JOIN_TIMEOUT_SECS),
-                        async {
-                            let new_topic = new_gossip.subscribe_and_join_bootstrap_only(publisher).await?;
-                            new_topic.split().await
-                        },
+                        new_gossip.subscribe(
+                            iroh_gossip::proto::TopicId::from(TOPIC_ID_BYTES),
+                            bootstrap_peers,
+                        ),
                     )
                     .await;
                     match join_result {
-                        Ok(Ok((new_sender, new_receiver))) => {
+                        Ok(Ok(new_topic)) => {
+                            let (new_sender, new_receiver) = new_topic.split();
                                 // Replace the shared sender and gossip handle
                                 {
                                     let mut sender_guard = reconnect_shared.write().await;
@@ -1849,6 +1819,47 @@ fn load_known_peers(path: &str) -> Vec<iroh::EndpointId> {
         .collect()
 }
 
+/// Seeds from the compiled-in/env bootstrap list + known-peers file, deduplicated,
+/// self excluded. Used at startup and on every reconnect.
+fn gather_bootstrap_peers(
+    bootstrap_ids_str: &str,
+    peers_file: &str,
+    my_node_id: iroh::EndpointId,
+) -> Vec<iroh::EndpointId> {
+    let mut peers: Vec<iroh::EndpointId> = bootstrap_ids_str
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    for p in load_known_peers(peers_file) {
+        if !peers.contains(&p) {
+            peers.push(p);
+        }
+    }
+    peers.retain(|p| *p != my_node_id);
+    peers
+}
+
+/// join_peers with the 10s cap the dtt wrapper used to provide internally.
+async fn join_peers_timeout(
+    sender: &iroh_gossip::api::GossipSender,
+    peers: Vec<iroh::EndpointId>,
+) -> Result<(), String> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(JOIN_PEERS_TIMEOUT_SECS),
+        sender.join_peers(peers),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!(
+            "join_peers timed out after {}s",
+            JOIN_PEERS_TIMEOUT_SECS
+        )),
+    }
+}
+
 //Save a peer's NodeId to the known-peers file if it's not already in there
 fn save_peer_if_new(path: &str, node_id: &iroh::EndpointId, my_node_id: &iroh::EndpointId) {
     if node_id == my_node_id {
@@ -1920,7 +1931,7 @@ fn load_or_create_node_key(path: &str) -> anyhow::Result<SecretKey> {
 /// Spawn an async task that processes incoming gossip events. Called on startup
 /// and again after reconnection.
 fn spawn_receive_task(
-    receiver: DttGossipReceiver,
+    mut receiver: GossipReceiver,
     peers_file: String,
     my_node_id: iroh::EndpointId,
     trusted_publishers: Arc<RwLock<HashSet<String>>>,
@@ -1942,7 +1953,7 @@ fn spawn_receive_task(
     unique_sources: Arc<Mutex<HashSet<String>>>,
     last_seq_per_sender: Arc<Mutex<HashMap<String, u64>>>,
     trusted_monitors: Arc<RwLock<HashSet<String>>>,
-    shared_sender: Arc<tokio::sync::RwLock<DttGossipSender>>,
+    shared_sender: Arc<tokio::sync::RwLock<GossipSender>>,
 ) {
     tokio::spawn(async move {
         let my_node_id_str = my_node_id.to_string();
@@ -2012,7 +2023,7 @@ fn spawn_receive_task(
                                                                 &suggest.sender[..8], peers.len(), suggest.reason
                                                             );
                                                             let sender = shared_sender.read().await;
-                                                            if let Err(e) = sender.join_peers_direct(peers, None).await {
+                                                            if let Err(e) = join_peers_timeout(&sender, peers).await {
                                                                 eprintln!("\x1b[35m[WARN] Failed to join suggested peers: {}\x1b[0m", e);
                                                             }
                                                         }
@@ -2067,4 +2078,18 @@ fn spawn_receive_task(
             reconnect_notify.notify_one();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::Digest;
+
+    #[test]
+    fn topic_id_matches_sha512_derivation() {
+        let mut hasher = sha2::Sha512::new();
+        hasher.update(TOPIC_STRING.as_bytes());
+        let hash: [u8; 32] = hasher.finalize()[..32].try_into().unwrap();
+        assert_eq!(TOPIC_ID_BYTES, hash);
+    }
 }

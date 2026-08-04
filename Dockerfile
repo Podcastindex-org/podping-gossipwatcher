@@ -9,7 +9,6 @@ RUN apt-get update \
 WORKDIR /src
 
 COPY Cargo.toml Cargo.lock /src/
-COPY dtt /src/dtt
 COPY podping-gossipwatcher /src/podping-gossipwatcher
 
 RUN cargo build --release --locked -p podping-gossipwatcher
