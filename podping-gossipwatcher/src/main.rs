@@ -1270,7 +1270,7 @@ async fn main() -> anyhow::Result<()> {
                                 // Don't reset consecutive_reconnects here — wait for the
                                 // isolation detector to confirm we're actually receiving.
                                 // It will be reset when unique_sources > threshold.
-                                println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully (bootstrap-only mode).\x1b[0m");
+                                println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
                             }
                         Ok(Err(e)) => {
                             eprintln!("\x1b[1;31m[RECONNECT] Failed to re-join gossip topic: {}. Will retry.\x1b[0m", e);

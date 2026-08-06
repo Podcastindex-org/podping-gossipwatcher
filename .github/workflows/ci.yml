@@ -18,6 +18,8 @@ jobs:
         run: cargo check --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked
       - name: Build
         run: cargo build -p podping-gossipwatcher --locked
       - name: Docker build
