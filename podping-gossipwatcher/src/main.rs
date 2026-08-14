@@ -73,6 +73,8 @@ fn read_rss_bytes() -> u64 {
     { 0 }
 }
 const ARCHIVE_SYNC_ALPN: &[u8] = b"/podping-archive-sync/1";
+// Most notifications served in a single catch-up response.
+const MAX_SYNC_MESSAGES: usize = 50_000;
 const DEFAULT_SSE_BIND_ADDR: &str = "0.0.0.0:8089";
 const DEFAULT_SSE_BUFFER_SIZE: usize = 1000;
 
@@ -457,7 +459,11 @@ impl iroh::protocol::ProtocolHandler for ArchiveSyncHandler {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().saturating_sub(since)
         );
 
-        let payloads = {
+        // Fetch one more than we will send so we can tell the peer's request was
+        // truncated. The limit lives in the query itself: `since` comes off the
+        // wire, so an unbounded SELECT would let any peer make us buffer the
+        // entire archive in memory.
+        let mut payloads = {
             let db = match self.db.lock() {
                 Ok(db) => db,
                 Err(e) => {
@@ -465,16 +471,16 @@ impl iroh::protocol::ProtocolHandler for ArchiveSyncHandler {
                     return Ok(());
                 }
             };
-            db.messages_since(since).unwrap_or_default()
+            db.messages_since(since, MAX_SYNC_MESSAGES + 1).unwrap_or_default()
         };
 
-        // Cap response to avoid OOM on very large archives
-        let payloads: Vec<_> = if payloads.len() > 50_000 {
-            println!("\x1b[33m[SYNC] Capping response at 50000 of {} messages\x1b[0m", payloads.len());
-            payloads.into_iter().take(50_000).collect()
-        } else {
-            payloads
-        };
+        if payloads.len() > MAX_SYNC_MESSAGES {
+            payloads.truncate(MAX_SYNC_MESSAGES);
+            println!(
+                "\x1b[33m[SYNC] Capping response at {} messages — peer will still be behind\x1b[0m",
+                MAX_SYNC_MESSAGES
+            );
+        }
 
         for payload in &payloads {
             let len = (payload.len() as u32).to_be_bytes();
