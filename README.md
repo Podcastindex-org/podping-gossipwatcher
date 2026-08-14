@@ -105,7 +105,7 @@ All configuration is via environment variables:
 | `PEER_ANNOUNCE_INTERVAL` | `300` | Seconds between self-announcements (0 disables)              |
 | `PEER_ENDORSE_INTERVAL` | `45` | Seconds between trust endorsements                           |
 | `ARCHIVE_ENABLED` | `false` | Archive notifications to SQLite                              |
-| `ARCHIVE_PATH` | `listener_archive.db` | SQLite archive location                                      |
+| `ARCHIVE_PATH` | `listener_archive.db` | SQLite archive location (WAL mode — expect `-wal`/`-shm` sidecar files, and make the containing directory writable) |
 | `CATCHUP_ENABLED` | `false` | Fetch missed notifications from peer archives on join        |
 | `SSE_ENABLED` | `false` | Serve notifications as SSE                                   |
 | `SSE_BIND_ADDR` | `0.0.0.0:8089` | SSE listen address                                           |
