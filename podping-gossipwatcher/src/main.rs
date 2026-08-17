@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Write;
+use std::sync::OnceLock;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
@@ -57,19 +58,34 @@ const RSS_CEILING_BYTES: u64 = 1024 * 1024 * 1024;   // 1 GB RSS ceiling — saf
 const BROADCAST_TIMEOUT_SECS: u64 = 10;
 const JOIN_PEERS_TIMEOUT_SECS: u64 = 10;
 
-/// Read process resident set size in bytes. Returns 0 on non-Linux or read failure.
+/// Shared sysinfo `System` instance. Kept across calls so CPU-usage deltas
+/// (which need at least two samples) work, and to avoid re-allocating on
+/// every metrics read.
+fn process_system() -> &'static std::sync::Mutex<sysinfo::System> {
+    static SYS: OnceLock<std::sync::Mutex<sysinfo::System>> = OnceLock::new();
+    SYS.get_or_init(|| std::sync::Mutex::new(sysinfo::System::new()))
+}
+
+/// Refresh CPU + memory for our own process and run `f` with the refreshed
+/// `Process`. Returns `None` if the pid could not be resolved or the process
+/// disappeared. Locks the shared `System`.
+fn with_self_process<T>(f: impl FnOnce(&sysinfo::Process) -> T) -> Option<T> {
+    let pid = sysinfo::get_current_pid().ok()?;
+    let mtx = process_system();
+    let mut sys = mtx.lock().unwrap_or_else(|p| p.into_inner());
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory(),
+    );
+    sys.process(pid).map(f)
+}
+
+/// Read process resident set size in bytes. Returns 0 on failure.
 fn read_rss_bytes() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()) {
-                return pages * 4096;
-            }
-        }
-        0
-    }
-    #[cfg(not(target_os = "linux"))]
-    { 0 }
+    with_self_process(|p| p.memory()).unwrap_or(0)
 }
 
 /// Resolve trace output path: `TRACE_FILE` wins; on Unix, `TRACE_FD3=1` uses
@@ -308,51 +324,21 @@ impl PeerAnnounce {
         }
     }
 
-    /// Read CPU usage, RSS memory, and thread count from /proc/self.
+    /// Read CPU usage, RSS memory (MB), and thread count for our own process.
+    /// Portable across Linux, macOS, and Windows via the `sysinfo` crate.
+    ///
+    /// CPU is the sample since the previous refresh (roughly, since the last
+    /// call to `with_self_process` — see `process_system`), so on the very
+    /// first call it will read ~0.0%. Thread count comes from `Process::tasks`
+    /// and may be `None` on platforms where sysinfo does not expose it.
     fn gather_metrics() -> (Option<f32>, Option<u64>, Option<u32>) {
-        let thread_count = fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("Threads:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse::<u32>().ok())
-            });
-
-        let memory_mb = fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .map(|kb| kb / 1024)
-            });
-
-        // CPU: read /proc/self/stat for utime+stime ticks, divide by uptime
-        let cpu_percent = (|| {
-            let stat = fs::read_to_string("/proc/self/stat").ok()?;
-            let fields: Vec<&str> = stat.rsplit(')').next()?.split_whitespace().collect();
-            // fields[11] = utime, fields[12] = stime (0-indexed after the closing paren)
-            let utime: u64 = fields.get(11)?.parse().ok()?;
-            let stime: u64 = fields.get(12)?.parse().ok()?;
-            let total_ticks = utime + stime;
-
-            let uptime_str = fs::read_to_string("/proc/uptime").ok()?;
-            let uptime_secs: f64 = uptime_str.split_whitespace().next()?.parse().ok()?;
-
-            let start_time: u64 = fields.get(19)?.parse().ok()?;
-            let ticks_per_sec: u64 = 100; // sysconf(_SC_CLK_TCK), almost always 100
-            let process_secs = uptime_secs - (start_time as f64 / ticks_per_sec as f64);
-
-            if process_secs > 0.0 {
-                Some((total_ticks as f64 / ticks_per_sec as f64 / process_secs * 100.0) as f32)
-            } else {
-                None
-            }
-        })();
-
-        (cpu_percent, memory_mb, thread_count)
+        with_self_process(|p| {
+            let cpu_percent = Some(p.cpu_usage());
+            let memory_mb = Some(p.memory() / (1024 * 1024));
+            let thread_count = p.tasks().map(|t| t.len() as u32);
+            (cpu_percent, memory_mb, thread_count)
+        })
+        .unwrap_or((None, None, None))
     }
 
     fn canonical_endorse_bytes(&self) -> Vec<u8> {
@@ -1530,9 +1516,12 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
             // Try PeerAnnounce first
             if let Ok(announce) = serde_json::from_slice::<PeerAnnounce>(raw) {
                 if announce.msg_type == "peer_announce" {
-                    let metrics_str = match (announce.cpu_percent, announce.memory_mb, announce.thread_count) {
-                        (Some(cpu), Some(mem), Some(thr)) => {
-                            let mut s = format!(" [cpu={:.1}% mem={}MB thr={}", cpu, mem, thr);
+                    let metrics_str = match (announce.cpu_percent, announce.memory_mb) {
+                        (Some(cpu), Some(mem)) => {
+                            let mut s = format!(" [cpu={:.1}% mem={}MB", cpu, mem);
+                            if let Some(thr) = announce.thread_count {
+                                s.push_str(&format!(" thr={}", thr));
+                            }
                             if let Some(n) = announce.neighbor_count { s.push_str(&format!(" nbr={}", n)); }
                             if let Some(up) = announce.uptime_secs {
                                 let hours = up / 3600;
