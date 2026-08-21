@@ -111,7 +111,8 @@ All configuration is via environment variables:
 | `SSE_BIND_ADDR` | `0.0.0.0:8089` | SSE listen address                                           |
 | `SSE_BUFFER_SIZE` | `1000` | SSE replay-buffer size                                       |
 | `NODE_FRIENDLY_NAME` | (unset) | Human-readable name shown to the rest of the swarm           |
-| `TRACE_FD3` | (off) | Set to `1` to emit debug tracing on file descriptor 3        |
+| `TRACE_FILE` | (unset) | Write debug tracing to this file instead of stderr |
+| `TRACE_FD3` | (off) | Unix only: set to `1` to trace via `/dev/fd/3` (use with `3>trace.log`) |
 
 ## Releases
 

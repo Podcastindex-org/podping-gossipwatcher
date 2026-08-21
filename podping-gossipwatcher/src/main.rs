@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Write;
-use std::os::unix::io::FromRawFd;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
@@ -72,6 +71,50 @@ fn read_rss_bytes() -> u64 {
     #[cfg(not(target_os = "linux"))]
     { 0 }
 }
+
+/// Resolve trace output path: `TRACE_FILE` wins; on Unix, `TRACE_FD3=1` uses
+/// `/dev/fd/3` (for shell usage like `3>trace.log`).
+fn trace_output_path() -> Option<String> {
+    if let Ok(path) = env::var("TRACE_FILE") {
+        let path = path.trim().to_string();
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    #[cfg(unix)]
+    if env::var("TRACE_FD3").as_deref() == Ok("1") {
+        return Some("/dev/fd/3".to_string());
+    }
+    None
+}
+
+fn open_trace_writer() -> Box<dyn std::io::Write + Send + Sync> {
+    let Some(path) = trace_output_path() else {
+        return Box::new(std::io::stderr());
+    };
+
+    let is_dev_fd = path.starts_with("/dev/fd/");
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true);
+    if !is_dev_fd {
+        opts.create(true).append(true);
+    }
+
+    match opts.open(&path) {
+        Ok(file) => {
+            eprintln!("  Tracing to {}", path);
+            Box::new(file)
+        }
+        Err(e) => {
+            eprintln!(
+                "\x1b[35m[WARN] Failed to open trace output {}: {}; using stderr\x1b[0m",
+                path, e
+            );
+            Box::new(std::io::stderr())
+        }
+    }
+}
+
 const ARCHIVE_SYNC_ALPN: &[u8] = b"/podping-archive-sync/1";
 const DEFAULT_SSE_BIND_ADDR: &str = "0.0.0.0:8089";
 const DEFAULT_SSE_BUFFER_SIZE: usize = 1000;
@@ -640,24 +683,12 @@ async fn run_catchup(
 //Main ---------------------------------------------------------------------------------------------
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Write tracing output to fd 3 only if TRACE_FD3=1 and fd 3 is a pipe or
-    // regular file, otherwise stderr. Uses a non-blocking writer so log spam
-    // (e.g., iroh path exhaustion retries) can't starve the tokio runtime.
-    // Usage: TRACE_FD3=1 RUST_LOG=debug ./gossip-listener 3>trace.log
-    let trace_writer: Box<dyn std::io::Write + Send + Sync> = unsafe {
-        let mut stat: libc::stat = std::mem::zeroed();
-        let fd3_ok = env::var("TRACE_FD3").as_deref() == Ok("1")
-            && libc::fstat(3, &mut stat) == 0
-            && {
-                let ft = stat.st_mode & libc::S_IFMT;
-                ft == libc::S_IFIFO || ft == libc::S_IFREG
-            };
-        if fd3_ok {
-            Box::new(std::fs::File::from_raw_fd(3))
-        } else {
-            Box::new(std::io::stderr())
-        }
-    };
+    // Write tracing output to TRACE_FILE, or on Unix TRACE_FD3=1 via /dev/fd/3,
+    // otherwise stderr. Uses a non-blocking writer so log spam (e.g., iroh path
+    // exhaustion retries) can't starve the tokio runtime.
+    // Usage: TRACE_FILE=trace.log RUST_LOG=debug ./podping-gossipwatcher
+    //    or: TRACE_FD3=1 RUST_LOG=debug ./podping-gossipwatcher 3>trace.log
+    let trace_writer = open_trace_writer();
     let (non_blocking, _guard) = tracing_appender::non_blocking(trace_writer);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
