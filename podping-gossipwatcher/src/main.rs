@@ -103,6 +103,8 @@ struct PeerAnnounce {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     os: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     build_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     neighbors: Option<Vec<String>>,
@@ -216,6 +218,7 @@ impl PeerAnnounce {
             last_msg_age_secs: metrics.last_msg_age_secs,
             reconnect_count: metrics.reconnect_count,
             os: Some(std::env::consts::OS.to_string()),
+            arch: Some(std::env::consts::ARCH.to_string()),
             build_type: Some(if cfg!(debug_assertions) { "debug" } else { "release" }.to_string()),
             neighbors: metrics.neighbors,
         }
@@ -245,6 +248,7 @@ impl PeerAnnounce {
             last_msg_age_secs: None,
             reconnect_count: None,
             os: None,
+            arch: None,
             build_type: None,
             neighbors: None,
         }
@@ -1514,6 +1518,7 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
                             if let Some(age) = announce.last_msg_age_secs { s.push_str(&format!(" age={}s", age)); }
                             if let Some(rc) = announce.reconnect_count { s.push_str(&format!(" reconn={}", rc)); }
                             if let Some(ref os) = announce.os { s.push_str(&format!(" {}", os)); }
+                            if let Some(ref arch) = announce.arch { s.push_str(&format!("/{}", arch)); }
                             if let Some(ref bt) = announce.build_type { s.push_str(&format!("/{}", bt)); }
                             s.push(']');
                             s
@@ -2092,5 +2097,19 @@ mod tests {
         hasher.update(TOPIC_STRING.as_bytes());
         let hash: [u8; 32] = hasher.finalize()[..32].try_into().unwrap();
         assert_eq!(TOPIC_ID_BYTES, hash);
+    }
+
+    #[test]
+    fn announce_publishes_processor_arch() {
+        let a = PeerAnnounce::new("node", "0.0.0", None, AnnounceMetrics::default());
+        assert_eq!(a.arch.as_deref(), Some(std::env::consts::ARCH));
+    }
+
+    #[test]
+    fn announce_json_without_arch_still_deserializes() {
+        // Announces from pre-arch nodes must keep parsing on a mixed-version mesh
+        let json = r#"{"type":"peer_announce","node_id":"n","version":"0.12.0","timestamp":1}"#;
+        let a: PeerAnnounce = serde_json::from_str(json).unwrap();
+        assert!(a.arch.is_none());
     }
 }
