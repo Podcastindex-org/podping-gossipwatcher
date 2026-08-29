@@ -3,6 +3,7 @@ mod memwatch;
 mod sse;
 
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
