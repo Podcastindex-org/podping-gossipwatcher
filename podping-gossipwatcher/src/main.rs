@@ -107,6 +107,16 @@ struct PeerAnnounce {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     build_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    iroh_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watchdog_restarts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint_resets: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neighbors_direct: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neighbors_relayed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     neighbors: Option<Vec<String>>,
 }
 
@@ -120,6 +130,9 @@ struct AnnounceMetrics {
     msgs_sent: Option<u64>,
     last_msg_age_secs: Option<u64>,
     reconnect_count: Option<u64>,
+    endpoint_resets: Option<u64>,
+    neighbors_direct: Option<u32>,
+    neighbors_relayed: Option<u32>,
 }
 
 // Canonical form for peer_endorse signing (alphabetical by serialized key name)
@@ -220,6 +233,11 @@ impl PeerAnnounce {
             os: Some(std::env::consts::OS.to_string()),
             arch: Some(std::env::consts::ARCH.to_string()),
             build_type: Some(if cfg!(debug_assertions) { "debug" } else { "release" }.to_string()),
+            iroh_version: option_env!("IROH_VERSION").map(str::to_string),
+            watchdog_restarts: Some(memwatch::restart_count()),
+            endpoint_resets: metrics.endpoint_resets,
+            neighbors_direct: metrics.neighbors_direct,
+            neighbors_relayed: metrics.neighbors_relayed,
             neighbors: metrics.neighbors,
         }
     }
@@ -250,6 +268,11 @@ impl PeerAnnounce {
             os: None,
             arch: None,
             build_type: None,
+            iroh_version: None,
+            watchdog_restarts: None,
+            endpoint_resets: None,
+            neighbors_direct: None,
+            neighbors_relayed: None,
             neighbors: None,
         }
     }
@@ -852,6 +875,11 @@ async fn main() -> anyhow::Result<()> {
     let reconnect_requested = Arc::new(AtomicBool::new(false));
     let reconnect_notify = Arc::new(Notify::new());
     let force_endpoint_reset = Arc::new(AtomicBool::new(false));
+    let endpoint_reset_count = Arc::new(AtomicU64::new(0));
+    // Current endpoint handle, replaced by the reconnect task on endpoint recycles
+    // so the announce task can query path info on the live endpoint
+    let shared_endpoint: Arc<tokio::sync::RwLock<iroh::Endpoint>> =
+        Arc::new(tokio::sync::RwLock::new(endpoint.clone()));
     let receive_generation = Arc::new(AtomicU64::new(0));
 
     // --- Adaptive memory watchdog (iroh #4390 leak mitigation) ---
@@ -898,19 +926,28 @@ async fn main() -> anyhow::Result<()> {
         let announce_reconnects = reconnect_count.clone();
         let announce_neighbors = neighbor_count.clone();
         let announce_neighbor_ids = neighbor_ids.clone();
+        let announce_ep_resets = endpoint_reset_count.clone();
+        let announce_endpoint = shared_endpoint.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(peer_announce_interval)).await;
                 let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                 let last_notif = announce_last_notif.load(Ordering::Relaxed);
+                let neighbor_list: Vec<String> =
+                    announce_neighbor_ids.read().unwrap().iter().cloned().collect();
+                let ep = announce_endpoint.read().await.clone();
+                let (direct, relayed) = classify_neighbor_paths(&ep, &neighbor_list).await;
                 let metrics = AnnounceMetrics {
                     neighbor_count: Some(announce_neighbors.load(Ordering::Relaxed)),
-                    neighbors: Some(announce_neighbor_ids.read().unwrap().iter().cloned().collect()),
+                    neighbors: Some(neighbor_list),
                     uptime_secs: Some(start_instant.elapsed().as_secs()),
                     msgs_received: Some(announce_notifs.load(Ordering::Relaxed)),
                     msgs_sent: None,
                     last_msg_age_secs: Some(now_secs.saturating_sub(last_notif)),
                     reconnect_count: Some(announce_reconnects.load(Ordering::Relaxed)),
+                    endpoint_resets: Some(announce_ep_resets.load(Ordering::Relaxed)),
+                    neighbors_direct: Some(direct),
+                    neighbors_relayed: Some(relayed),
                 };
                 let announce = PeerAnnounce::new(&announce_node_id, env!("CARGO_PKG_VERSION"), announce_friendly.clone(), metrics);
                 match serde_json::to_vec(&announce) {
@@ -1103,6 +1140,8 @@ async fn main() -> anyhow::Result<()> {
         let reconnect_shared = shared_sender.clone();
         let reconnect_gossip_handle = shared_gossip.clone();
         let reconnect_endpoint = endpoint.clone();
+        let reconnect_ep_resets = endpoint_reset_count.clone();
+        let reconnect_shared_endpoint = shared_endpoint.clone();
         let reconnect_node_key_bytes = node_key_bytes;
         let reconnect_bootstrap_ids = bootstrap_peer_ids_str.clone();
         let reconnect_peers_file = peers_file.clone();
@@ -1180,6 +1219,8 @@ async fn main() -> anyhow::Result<()> {
                                     ).await.ok();
                                 });
                                 _current_endpoint = new_ep;
+                                reconnect_ep_resets.fetch_add(1, Ordering::Relaxed);
+                                *reconnect_shared_endpoint.write().await = _current_endpoint.clone();
                                 eprintln!("\x1b[32m[RECONNECT] Fresh endpoint created successfully.\x1b[0m");
                             }
                             Err(e) => {
@@ -1517,6 +1558,10 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
                             if let Some(tx) = announce.msgs_sent { s.push_str(&format!(" tx={}", tx)); }
                             if let Some(age) = announce.last_msg_age_secs { s.push_str(&format!(" age={}s", age)); }
                             if let Some(rc) = announce.reconnect_count { s.push_str(&format!(" reconn={}", rc)); }
+                            if let Some(wd) = announce.watchdog_restarts { s.push_str(&format!(" wd={}", wd)); }
+                            if let Some(ep) = announce.endpoint_resets { s.push_str(&format!(" ep={}", ep)); }
+                            if let (Some(d), Some(r)) = (announce.neighbors_direct, announce.neighbors_relayed) { s.push_str(&format!(" d/r={}/{}", d, r)); }
+                            if let Some(ref iv) = announce.iroh_version { s.push_str(&format!(" iroh={}", iv)); }
                             if let Some(ref os) = announce.os { s.push_str(&format!(" {}", os)); }
                             if let Some(ref arch) = announce.arch { s.push_str(&format!("/{}", arch)); }
                             if let Some(ref bt) = announce.build_type { s.push_str(&format!("/{}", bt)); }
@@ -1827,6 +1872,39 @@ fn load_known_peers(path: &str) -> Vec<iroh::EndpointId> {
 
 /// Seeds from the compiled-in/env bootstrap list + known-peers file, deduplicated,
 /// self excluded. Used at startup and on every reconnect.
+/// Classify current gossip neighbors by how we reach them: any active IP path
+/// counts as direct; active relay paths only counts as relayed. Neighbors with
+/// no known transport info are left uncounted.
+async fn classify_neighbor_paths(endpoint: &iroh::Endpoint, neighbor_ids: &[String]) -> (u32, u32) {
+    let mut direct = 0u32;
+    let mut relayed = 0u32;
+    for id_str in neighbor_ids {
+        let Ok(id) = id_str.parse::<iroh::EndpointId>() else {
+            continue;
+        };
+        let Some(info) = endpoint.remote_info(id).await else {
+            continue;
+        };
+        let mut has_ip = false;
+        let mut has_relay = false;
+        for addr in info.addrs() {
+            if matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active) {
+                match addr.addr() {
+                    iroh::TransportAddr::Ip(_) => has_ip = true,
+                    iroh::TransportAddr::Relay(_) => has_relay = true,
+                    _ => {}
+                }
+            }
+        }
+        if has_ip {
+            direct += 1;
+        } else if has_relay {
+            relayed += 1;
+        }
+    }
+    (direct, relayed)
+}
+
 fn gather_bootstrap_peers(
     bootstrap_ids_str: &str,
     peers_file: &str,
@@ -2103,6 +2181,40 @@ mod tests {
     fn announce_publishes_processor_arch() {
         let a = PeerAnnounce::new("node", "0.0.0", None, AnnounceMetrics::default());
         assert_eq!(a.arch.as_deref(), Some(std::env::consts::ARCH));
+    }
+
+    #[test]
+    fn announce_publishes_watchdog_and_iroh_diagnostics() {
+        let a = PeerAnnounce::new("node", "0.0.0", None, AnnounceMetrics::default());
+        assert_eq!(a.watchdog_restarts, Some(0));
+        let iroh = a.iroh_version.expect("iroh_version should be set at build time");
+        assert!(iroh.starts_with(|c: char| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn announce_carries_endpoint_resets_and_path_counts_from_metrics() {
+        let m = AnnounceMetrics {
+            endpoint_resets: Some(3),
+            neighbors_direct: Some(4),
+            neighbors_relayed: Some(1),
+            ..Default::default()
+        };
+        let a = PeerAnnounce::new("node", "0.0.0", None, m);
+        assert_eq!(a.endpoint_resets, Some(3));
+        assert_eq!(a.neighbors_direct, Some(4));
+        assert_eq!(a.neighbors_relayed, Some(1));
+    }
+
+    #[test]
+    fn announce_json_without_diagnostic_fields_still_deserializes() {
+        // Announces from pre-0.15 nodes must keep parsing on a mixed-version mesh
+        let json = r#"{"type":"peer_announce","node_id":"n","version":"0.14.0","timestamp":1}"#;
+        let a: PeerAnnounce = serde_json::from_str(json).unwrap();
+        assert!(a.iroh_version.is_none());
+        assert!(a.watchdog_restarts.is_none());
+        assert!(a.endpoint_resets.is_none());
+        assert!(a.neighbors_direct.is_none());
+        assert!(a.neighbors_relayed.is_none());
     }
 
     #[test]
