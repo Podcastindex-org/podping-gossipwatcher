@@ -812,7 +812,21 @@ async fn main() -> anyhow::Result<()> {
     };
 
     //Set up Iroh context
-    let node_key = load_or_create_node_key(&node_key_file)?;
+    let node_key = match env::var("GOSSIP_KEY_SEED").ok().filter(|s| !s.trim().is_empty()) {
+        Some(seed) => {
+            let disc = choose_discriminator(
+                env::var("GOSSIP_KEY_DISCRIMINATOR").ok(),
+                env::var("HOSTNAME").ok(),
+                fs::read_to_string("/proc/sys/kernel/hostname").ok(),
+            )
+            .ok_or_else(|| anyhow::anyhow!(
+                "GOSSIP_KEY_SEED is set but no discriminator found; set GOSSIP_KEY_DISCRIMINATOR (or HOSTNAME)"
+            ))?;
+            println!("  Deriving node key from GOSSIP_KEY_SEED (discriminator: {})", disc);
+            SecretKey::from_bytes(&derive_key_from_seed(&seed, &disc))
+        }
+        None => load_or_create_node_key(&node_key_file)?,
+    };
     let node_key_bytes = node_key.to_bytes();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(node_key)
@@ -825,7 +839,7 @@ async fn main() -> anyhow::Result<()> {
 
     //Self assign an Iroh node id
     let my_node_id = endpoint.id();
-    let peer_names: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
+    let peer_names: Arc<RwLock<HashMap<String, PeerNameEntry>>> = Arc::new(RwLock::new(HashMap::new()));
     println!("  Iroh Node ID: {}", my_node_id);
     println!("  Sender pubkey: {}", pubkey_hex);
 
@@ -1538,7 +1552,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 //Incoming Iroh gossip event handler
-fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, trusted_publishers: &Arc<RwLock<HashSet<String>>>, trusted_publishers_file: &str, last_notification_time: &Arc<AtomicU64>, db: &Option<Arc<Mutex<archive::Archive>>>, neighbor_tx: &Arc<Mutex<Option<tokio::sync::mpsc::Sender<iroh::EndpointId>>>>, peer_names: &Arc<RwLock<HashMap<String, String>>>, sse_tx: &Option<tokio::sync::broadcast::Sender<String>>, notifications_received: &Arc<AtomicU64>, last_seq_per_sender: &Arc<Mutex<HashMap<String, u64>>>) {
+fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, trusted_publishers: &Arc<RwLock<HashSet<String>>>, trusted_publishers_file: &str, last_notification_time: &Arc<AtomicU64>, db: &Option<Arc<Mutex<archive::Archive>>>, neighbor_tx: &Arc<Mutex<Option<tokio::sync::mpsc::Sender<iroh::EndpointId>>>>, peer_names: &Arc<RwLock<HashMap<String, PeerNameEntry>>>, sse_tx: &Option<tokio::sync::broadcast::Sender<String>>, notifications_received: &Arc<AtomicU64>, last_seq_per_sender: &Arc<Mutex<HashMap<String, u64>>>) {
     match event {
         Event::Received(msg) => {
             let raw = &msg.content[..];
@@ -1582,16 +1596,22 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
                     if let Ok(node_id) = announce.node_id.parse() {
                         save_peer_if_new(peers_file, &node_id, my_node_id);
                     }
-                    if let Some(ref name) = announce.friendly_name {
-                        let sanitized = sanitize_friendly_name(name);
-                        if !sanitized.is_empty() {
-                            let key = announce.node_id.clone();
-                            let mut names = peer_names.write().unwrap();
-                            let is_new = names.get(&key).map_or(true, |old| *old != sanitized);
-                            names.insert(key, sanitized);
-                            if is_new {
-                                print_peer_table(&names);
+                    {
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                        let mut names = peer_names.write().unwrap();
+                        let pruned = prune_stale_peer_names(&mut names, now);
+                        let mut changed = false;
+                        if let Some(ref name) = announce.friendly_name {
+                            let sanitized = sanitize_friendly_name(name);
+                            if !sanitized.is_empty() {
+                                changed = upsert_peer_name(&mut names, &announce.node_id, &sanitized, now);
                             }
+                        }
+                        if pruned > 0 {
+                            println!("\x1b[36m[PEERS] Aged out {} peer(s) not heard from in {}s\x1b[0m", pruned, PEER_NAME_TTL_SECS);
+                        }
+                        if changed || pruned > 0 {
+                            print_peer_table(&names);
                         }
                     }
                 } else if announce.msg_type == "peer_endorse" {
@@ -1627,19 +1647,12 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
                     if let Some(ref name) = announce.friendly_name {
                         let sanitized = sanitize_friendly_name(name);
                         if !sanitized.is_empty() {
+                            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                             let mut names = peer_names.write().unwrap();
                             // Store under both sender pubkey (for notification display)
                             // and node_id (for peer table consistency)
-                            let mut changed = false;
-                            if names.get(&sender).map_or(true, |old| *old != sanitized) {
-                                names.insert(sender.clone(), sanitized.clone());
-                                changed = true;
-                            }
-                            let node_key = announce.node_id.clone();
-                            if names.get(&node_key).map_or(true, |old| *old != sanitized) {
-                                names.insert(node_key, sanitized);
-                                changed = true;
-                            }
+                            let mut changed = upsert_peer_name(&mut names, &sender, &sanitized, now);
+                            changed |= upsert_peer_name(&mut names, &announce.node_id, &sanitized, now);
                             if changed {
                                 print_peer_table(&names);
                             }
@@ -1694,7 +1707,7 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
                             let sender_display = {
                                 let names = peer_names.read().unwrap();
                                 match names.get(&notif.sender) {
-                                    Some(name) => format!("\"{}\" ({})", name, &notif.sender[..8.min(notif.sender.len())]),
+                                    Some(entry) => format!("\"{}\" ({})", entry.name, &notif.sender[..8.min(notif.sender.len())]),
                                     None => notif.sender[..8.min(notif.sender.len())].to_string(),
                                 }
                             };
@@ -1733,7 +1746,7 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
             let display = {
                 let names = peer_names.read().unwrap();
                 match names.get(&node_str) {
-                    Some(name) => format!("\"{}\" ({})", name, node_id),
+                    Some(entry) => format!("\"{}\" ({})", entry.name, node_id),
                     None => node_str,
                 }
             };
@@ -1752,7 +1765,7 @@ fn handle_event(event: Event, peers_file: &str, my_node_id: &iroh::EndpointId, t
             let display = {
                 let names = peer_names.read().unwrap();
                 match names.get(&node_str) {
-                    Some(name) => format!("\"{}\" ({})", name, node_id),
+                    Some(entry) => format!("\"{}\" ({})", entry.name, node_id),
                     None => node_str,
                 }
             };
@@ -1792,11 +1805,11 @@ fn sanitize_friendly_name(name: &str) -> String {
         .to_string()
 }
 
-fn print_peer_table(names: &HashMap<String, String>) {
+fn print_peer_table(names: &HashMap<String, PeerNameEntry>) {
     println!("\x1b[36m--- Known peers ({}) ---\x1b[0m", names.len());
-    for (key, name) in names {
+    for (key, entry) in names {
         let short_key = &key[..16.min(key.len())];
-        println!("\x1b[36m  \"{}\"  -> {}...\x1b[0m", name, short_key);
+        println!("\x1b[36m  \"{}\"  -> {}...\x1b[0m", entry.name, short_key);
     }
     println!("\x1b[36m---\x1b[0m");
 }
@@ -1944,30 +1957,97 @@ async fn join_peers_timeout(
     }
 }
 
-//Save a peer's NodeId to the known-peers file if it's not already in there
+/// A peer's display name plus when we last heard an announce/endorse naming it.
+/// Entries silent for longer than PEER_NAME_TTL_SECS are aged out so ephemeral
+/// node identities (e.g. containers without a persistent key) don't accumulate.
+pub struct PeerNameEntry {
+    pub name: String,
+    pub last_seen: u64,
+}
+
+const PEER_NAME_TTL_SECS: u64 = 3600;
+
+/// Drop peer-name entries not refreshed within PEER_NAME_TTL_SECS. Returns how many were removed.
+fn prune_stale_peer_names(names: &mut HashMap<String, PeerNameEntry>, now: u64) -> usize {
+    let before = names.len();
+    names.retain(|_, e| now.saturating_sub(e.last_seen) <= PEER_NAME_TTL_SECS);
+    before - names.len()
+}
+
+/// Insert or refresh a peer name, updating last_seen. Returns true when the
+/// name is new or changed (i.e. the peer table display should be reprinted).
+fn upsert_peer_name(names: &mut HashMap<String, PeerNameEntry>, key: &str, name: &str, now: u64) -> bool {
+    let changed = names.get(key).is_none_or(|e| e.name != name);
+    names.insert(key.to_string(), PeerNameEntry { name: name.to_string(), last_seen: now });
+    changed
+}
+
+/// LRU update of the known-peers list: a re-sighted peer moves to the end, a new
+/// peer appends (evicting from the front over `max`). Returns Some((list, is_new))
+/// when the file needs rewriting, None when nothing changed.
+fn update_known_peers_list(mut peers: Vec<String>, node_str: &str, max: usize) -> Option<(Vec<String>, bool)> {
+    match peers.iter().position(|p| p == node_str) {
+        Some(pos) if pos == peers.len() - 1 => None,
+        Some(pos) => {
+            let entry = peers.remove(pos);
+            peers.push(entry);
+            Some((peers, false))
+        }
+        None => {
+            peers.push(node_str.to_string());
+            if peers.len() > max {
+                let drain_count = peers.len() - max;
+                peers.drain(..drain_count);
+            }
+            Some((peers, true))
+        }
+    }
+}
+
+/// Deterministically derive an ed25519 node key from an operator-secret seed and
+/// a per-instance discriminator (domain-separated SHA-512, first 32 bytes).
+fn derive_key_from_seed(seed: &str, discriminator: &str) -> [u8; 32] {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha512::new();
+    hasher.update(b"podping-gossip-node-key-v1");
+    hasher.update([0u8]);
+    hasher.update(seed.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(discriminator.as_bytes());
+    hasher.finalize()[..32].try_into().unwrap()
+}
+
+/// Pick the key discriminator: explicit env override, then $HOSTNAME, then the
+/// kernel hostname; empty strings are treated as unset.
+fn choose_discriminator(
+    explicit: Option<String>,
+    hostname_env: Option<String>,
+    proc_hostname: Option<String>,
+) -> Option<String> {
+    [explicit, hostname_env, proc_hostname]
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty())
+}
+
+//Record a peer sighting in the known-peers file: new peers append, re-sighted
+//peers move to the end (LRU) so churn from ephemeral nodes can't evict stable peers.
 fn save_peer_if_new(path: &str, node_id: &iroh::EndpointId, my_node_id: &iroh::EndpointId) {
     if node_id == my_node_id {
         return;
     }
     let node_str = node_id.to_string();
-    let mut peers: Vec<String> = fs::read_to_string(path)
+    let peers: Vec<String> = fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
 
-    if peers.iter().any(|l| l == &node_str) {
+    let Some((peers, is_new)) = update_known_peers_list(peers, &node_str, MAX_KNOWN_PEERS) else {
         return;
-    }
-
-    peers.push(node_str.clone());
-
-    //Evict oldest entries if over the max cap
-    if peers.len() > MAX_KNOWN_PEERS {
-        let drain_count = peers.len() - MAX_KNOWN_PEERS;
-        peers.drain(..drain_count);
-    }
+    };
 
     if let Some(parent) = Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -1978,7 +2058,9 @@ fn save_peer_if_new(path: &str, node_id: &iroh::EndpointId, my_node_id: &iroh::E
         for p in &peers {
             let _ = writeln!(f, "{}", p);
         }
-        println!("[info] Saved new peer to {}: {}", path, node_str);
+        if is_new {
+            println!("[info] Saved new peer to {}: {}", path, node_str);
+        }
     }
 }
 
@@ -2023,7 +2105,7 @@ fn spawn_receive_task(
     last_notification_time: Arc<AtomicU64>,
     db: Option<Arc<Mutex<archive::Archive>>>,
     neighbor_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<iroh::EndpointId>>>>,
-    peer_names: Arc<RwLock<HashMap<String, String>>>,
+    peer_names: Arc<RwLock<HashMap<String, PeerNameEntry>>>,
     sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
     notifications_received: Arc<AtomicU64>,
     reconnect_failures: Arc<AtomicU64>,
@@ -2223,5 +2305,80 @@ mod tests {
         let json = r#"{"type":"peer_announce","node_id":"n","version":"0.12.0","timestamp":1}"#;
         let a: PeerAnnounce = serde_json::from_str(json).unwrap();
         assert!(a.arch.is_none());
+    }
+
+    #[test]
+    fn peer_name_older_than_ttl_is_pruned() {
+        let now = 100_000;
+        let mut names = HashMap::new();
+        names.insert("stale".to_string(), PeerNameEntry { name: "old".to_string(), last_seen: now - PEER_NAME_TTL_SECS - 1 });
+        names.insert("fresh".to_string(), PeerNameEntry { name: "new".to_string(), last_seen: now - 10 });
+        let removed = prune_stale_peer_names(&mut names, now);
+        assert_eq!(removed, 1);
+        assert!(!names.contains_key("stale"));
+        assert!(names.contains_key("fresh"));
+    }
+
+    #[test]
+    fn upsert_reports_new_or_changed_name() {
+        let mut names = HashMap::new();
+        assert!(upsert_peer_name(&mut names, "k", "alice", 100));
+        assert!(!upsert_peer_name(&mut names, "k", "alice", 200));
+        assert!(upsert_peer_name(&mut names, "k", "bob", 300));
+    }
+
+    #[test]
+    fn upsert_refreshes_last_seen_for_unchanged_name() {
+        let mut names = HashMap::new();
+        upsert_peer_name(&mut names, "k", "alice", 100);
+        upsert_peer_name(&mut names, "k", "alice", 500);
+        assert_eq!(names.get("k").unwrap().last_seen, 500);
+    }
+
+    #[test]
+    fn known_peer_resighting_moves_it_to_end_of_list() {
+        let peers = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let (updated, is_new) = update_known_peers_list(peers, "a", 15).unwrap();
+        assert_eq!(updated, vec!["b", "c", "a"]);
+        assert!(!is_new);
+    }
+
+    #[test]
+    fn peer_already_at_end_needs_no_rewrite() {
+        let peers = vec!["a".to_string(), "b".to_string()];
+        assert!(update_known_peers_list(peers, "b", 15).is_none());
+    }
+
+    #[test]
+    fn new_peer_appends_and_evicts_oldest_over_cap() {
+        let peers = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let (updated, is_new) = update_known_peers_list(peers, "d", 3).unwrap();
+        assert_eq!(updated, vec!["b", "c", "d"]);
+        assert!(is_new);
+    }
+
+    #[test]
+    fn seed_key_derivation_matches_pinned_vector() {
+        // Pinned so all three daemons provably derive identical keys from the
+        // same seed+discriminator, and the format never drifts silently.
+        let hex = |b: [u8; 32]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+        assert_eq!(
+            hex(derive_key_from_seed("test-seed", "node-a")),
+            "e896ec2ff9ea153eced64c4d9234feee16086baf4facfb7a24877093ba6ea633"
+        );
+        assert_eq!(
+            hex(derive_key_from_seed("test-seed", "node-b")),
+            "ad94bac53fa79991ae8afa61177df611700736dfedcfc69576e21bda49c8ccb9"
+        );
+    }
+
+    #[test]
+    fn discriminator_prefers_explicit_then_hostname_and_ignores_empty() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(choose_discriminator(s("x"), s("h"), s("p")), s("x"));
+        assert_eq!(choose_discriminator(None, s("h"), s("p")), s("h"));
+        assert_eq!(choose_discriminator(None, None, s("p")), s("p"));
+        assert_eq!(choose_discriminator(s(""), s(""), s("p")), s("p"));
+        assert_eq!(choose_discriminator(None, None, None), None);
     }
 }
