@@ -1,6 +1,6 @@
 [package]
 name = "podping-gossipwatcher"
-version = "0.14.0"
+version = "0.15.0"
 authors = ["Dave Jones"]
 edition = "2021"
 
@@ -22,6 +22,4 @@ tokio-stream = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 libc = "0.2"
-
-[dev-dependencies]
 sha2 = "0.10"
