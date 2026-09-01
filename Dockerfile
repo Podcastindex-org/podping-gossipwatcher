@@ -1,11 +1,5 @@
 FROM rust:latest AS builder
 
-USER root
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /src
 
 COPY Cargo.toml Cargo.lock /src/
@@ -15,10 +9,8 @@ RUN cargo build --release --locked -p podping-gossipwatcher
 
 FROM debian:trixie-slim AS runner
 
-USER root
-
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates openssl \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /data/gossip /opt/podping-gossipwatcher \
