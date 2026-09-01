@@ -7,7 +7,7 @@ COPY podping-gossipwatcher /src/podping-gossipwatcher
 
 RUN cargo build --release --locked -p podping-gossipwatcher
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS runner
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
